@@ -15,29 +15,6 @@ open StringBuilderExtensions
 
 module internal CommonUtil = 
 
-    /// Get the point from which an incremental search should begin given
-    /// a context point.  They don't begin at the point but rather before
-    /// or after the point depending on the direction.  Return true if 
-    /// a wrap was needed to get the start point
-    [<UsedInBackgroundThread>]
-    let GetSearchPointAndWrap path point = 
-        match path with
-        | Path.Forward ->
-            match SnapshotPointUtil.TryAddOne point with 
-            | Some point -> point, false
-            | None -> SnapshotPoint(point.Snapshot, 0), true
-        | Path.Backward ->
-            match SnapshotPointUtil.TrySubtractOne point with
-            | Some point -> point, false
-            | None -> SnapshotUtil.GetEndPoint point.Snapshot, true
-
-    /// Get the point from which an incremental search should begin given
-    /// a context point.  They don't begin at the point but rather before
-    /// or after the point depending on the direction
-    let GetSearchPoint path point = 
-        let point, _ = GetSearchPointAndWrap path point
-        point
-
     /// Raise the error / warning messages for a given SearchResult
     let RaiseSearchResultMessage (statusUtil : IStatusUtil) searchResult =
 
@@ -58,6 +35,7 @@ module internal CommonUtil =
                     Resources.Common_PatternNotFound
 
             statusUtil.OnError (format searchData.Pattern)
+        | SearchResult.Error (_, msg) -> statusUtil.OnError msg
 
 type internal CommonOperations
     (
@@ -104,6 +82,12 @@ type internal CommonOperations
     member x.MaintainCaretColumn 
         with get() = _maintainCaretColumn
         and set value = _maintainCaretColumn <- value
+
+    member x.CloseWindowUnlessDirty() = 
+        if _vimHost.IsDirty _textView.TextBuffer then
+            _statusUtil.OnError Resources.Common_NoWriteSinceLastChange
+        else
+            _vimHost.Close _textView
 
     /// Create a possibly LineWise register value with the specified string value at the given 
     /// point.  This is factored out here because a LineWise value in vim should always
@@ -193,7 +177,7 @@ type internal CommonOperations
         let allowPastEndOfLine = 
             _vimTextBuffer.ModeKind = ModeKind.Insert ||
             _globalSettings.IsVirtualEditOneMore ||
-            (_globalSettings.SelectionKind = SelectionKind.Exclusive && VisualKind.IsAnyVisualOrSelect _vimTextBuffer.ModeKind)
+            VisualKind.IsAnyVisualOrSelect _vimTextBuffer.ModeKind
 
         if not allowPastEndOfLine then
             let point = TextViewUtil.GetCaretPoint _textView
@@ -676,7 +660,7 @@ type internal CommonOperations
         {
             NewLine = newLineText
             Magic = _globalSettings.Magic
-            Count = 1 }
+            Count = VimRegexReplaceCount.One }
 
     member x.GoToDefinition() =
         let before = TextViewUtil.GetCaretPoint _textView
@@ -705,17 +689,21 @@ type internal CommonOperations
             _vimHost.Beep()
 
     member x.GoToFile () = 
-        x.CheckDirty (fun () ->
-            let text = x.WordUnderCursorOrEmpty 
-            if not (_vimHost.LoadFileIntoExistingWindow text _textView) then
-                _statusUtil.OnError (Resources.NormalMode_CantFindFile text))
+        x.GoToFile x.WordUnderCursorOrEmpty 
 
-    /// Look for a word under the cursor and go to the specified file in a new window.  No need to 
-    /// check for dirty since we are opening a new window
+    member x.GoToFile name =
+        x.CheckDirty (fun () ->
+            if not (_vimHost.LoadFileIntoExistingWindow name _textView) then
+                _statusUtil.OnError (Resources.NormalMode_CantFindFile name))
+
+    /// Look for a word under the cursor and go to the specified file in a new window.
     member x.GoToFileInNewWindow () =
-        let text = x.WordUnderCursorOrEmpty 
-        if not (_vimHost.LoadFileIntoNewWindow text) then
-            _statusUtil.OnError (Resources.NormalMode_CantFindFile text)
+        x.GoToFileInNewWindow x.WordUnderCursorOrEmpty 
+
+    /// No need to check for dirty since we are opening a new window
+    member x.GoToFileInNewWindow name =
+        if not (_vimHost.LoadFileIntoNewWindow name) then
+            _statusUtil.OnError (Resources.NormalMode_CantFindFile name)
 
     member x.GoToNextTab path count = 
 
@@ -950,7 +938,7 @@ type internal CommonOperations
 
             let replaceOne line (c : Capture) = 
                 let replaceData = x.GetReplaceData x.CaretPoint
-                let newText =  regex.Replace c.Value replace replaceData
+                let newText =  regex.Replace c.Value replace replaceData _registerMap
                 let offset = 
                     line
                     |> SnapshotLineUtil.GetStart
@@ -1302,6 +1290,7 @@ type internal CommonOperations
 
         member x.AdjustCaretForScrollOffset() = x.AdjustCaretForScrollOffset()
         member x.Beep() = x.Beep()
+        member x.CloseWindowUnlessDirty() = x.CloseWindowUnlessDirty()
         member x.CreateRegisterValue point stringData operationKind = x.CreateRegisterValue point stringData operationKind
         member x.DeleteLines startLine count register = x.DeleteLines startLine count register
         member x.EnsureAtCaret viewFlags = x.EnsureAtPoint x.CaretPoint viewFlags
@@ -1316,7 +1305,9 @@ type internal CommonOperations
         member x.GoToLocalDeclaration() = x.GoToLocalDeclaration()
         member x.GoToGlobalDeclaration() = x.GoToGlobalDeclaration()
         member x.GoToFile() = x.GoToFile()
+        member x.GoToFile name = x.GoToFile name
         member x.GoToFileInNewWindow() = x.GoToFileInNewWindow()
+        member x.GoToFileInNewWindow name = x.GoToFileInNewWindow name
         member x.GoToDefinition() = x.GoToDefinition()
         member x.GoToNextTab direction count = x.GoToNextTab direction count
         member x.GoToTab index = x.GoToTab index

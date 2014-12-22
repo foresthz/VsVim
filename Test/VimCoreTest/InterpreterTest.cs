@@ -778,6 +778,146 @@ namespace Vim.UnitTest
             }
         }
 
+        public sealed class EchoTest : InterpreterTest
+        {
+            [Fact]
+            public void WhenCalledWithNoArgsDoesNothing()
+            {
+                Create("");
+                ParseAndRun(@"echo");
+                Assert.Equal(null, _statusUtil.LastStatus);
+            }
+
+            [Fact]
+            public void WhenPassedIntegerEchoesItOnStatusLine()
+            {
+                Create("");
+                ParseAndRun(@"echo 2");
+                Assert.Equal("2", _statusUtil.LastStatus);
+            }
+
+            [Fact]
+            public void WhenPassedStringLiteralEchoesItOnStatusLine()
+            {
+                Create("");
+                ParseAndRun(@"echo 'foo'");
+                Assert.Equal("foo", _statusUtil.LastStatus);
+            }
+
+            [Fact]
+            public void WhenPassedStringConstantEchoesItOnStatusLine()
+            {
+                Create("");
+                ParseAndRun("echo \"foo\"");
+                Assert.Equal("foo", _statusUtil.LastStatus);
+            }
+
+            [Fact]
+            public void WhenPassedEmptyListEchoesItOnStatusLine()
+            {
+                Create("");
+                ParseAndRun(@"echo []");
+                Assert.Equal("[]", _statusUtil.LastStatus);
+            }
+
+            [Fact]
+            public void WhenPassedNonEmptyListEchoesItOnStatusLine()
+            {
+                Create("");
+                ParseAndRun("echo [1,\"two\",3]");
+                Assert.Equal("[1, 'two', 3]", _statusUtil.LastStatus);
+            }
+
+            [Fact]
+            public void WhenPassedEmptyDictionaryEchoesItOnStatusLine()
+            {
+                Create("");
+                ParseAndRun(@"echo {}");
+                Assert.Equal("{}", _statusUtil.LastStatus);
+            }
+
+            [Fact]
+            public void WhenPassedBooleanSettingWhichIsOffEchoes0OnStatusLine()
+            {
+                Create("");
+                _localSettings.ExpandTab = false;
+                ParseAndRun(@"echo &expandtab");
+                Assert.Equal("0", _statusUtil.LastStatus);
+            }
+
+            [Fact]
+            public void WhenPassedBooleanSettingWhichIsOnEchoes1OnStatusLine()
+            {
+                Create("");
+                _localSettings.ExpandTab = true;
+                ParseAndRun(@"echo &expandtab");
+                Assert.Equal("1", _statusUtil.LastStatus);
+            }
+
+            [Fact]
+            public void WhenPassedIntegerSettingsEchoesIntegerOnStatusLine()
+            {
+                Create("");
+                _localSettings.TabStop = 4;
+                ParseAndRun(@"echo &tabstop");
+                Assert.Equal("4", _statusUtil.LastStatus);
+            }
+
+            [Fact]
+            public void WhenPassedStringSettingsEchoesStringOnStatusLine()
+            {
+                Create("");
+                _globalSettings.Backspace = "eol";
+                ParseAndRun(@"echo &backspace");
+                Assert.Equal("eol", _statusUtil.LastStatus);
+            }
+
+            [Fact]
+            public void WhenPassedWindowSettingsEchoesItOnStatusLine()
+            {
+                Create("");
+                _windowSettings.Scroll = 12;
+                ParseAndRun(@"echo &scroll");
+                Assert.Equal("12", _statusUtil.LastStatus);
+            }
+
+            [Fact]
+            public void WhenPassedVariableEchoesItOnStatusLine()
+            {
+                Create("");
+                VariableMap["foo"] = VariableValue.NewString("bar");
+                ParseAndRun(@"echo foo");
+                Assert.Equal("bar", _statusUtil.LastStatus);
+            }
+
+            [Fact]
+            public void WhenPassedRegisterEchoesItOnStatusLine()
+            {
+                Create("");
+                UnnamedRegister.UpdateValue("Hello, world!");
+                ParseAndRun("echo @\"");
+                Assert.Equal("Hello, world!", _statusUtil.LastStatus);
+            }
+        }
+
+        public sealed class ExecuteTest : InterpreterTest
+        {
+            [Fact]
+            public void ExecuteWithNoArgumentsDoesNothing()
+            {
+                Create("");
+                ParseAndRun("execute");
+                Assert.Equal(null, _statusUtil.LastStatus);
+            }
+            [Fact]
+            public void ExecuteString()
+            {
+                Create("");
+                ParseAndRun("execute \"echo 'asdf'\"");
+                Assert.Equal("asdf", _statusUtil.LastStatus);
+            }
+        }
+
         public sealed class LetTest : InterpreterTest
         {
             Dictionary<string, VariableValue> _variableMap;
@@ -790,6 +930,11 @@ namespace Vim.UnitTest
             private void AssertValue(string name, int value)
             {
                 AssertValue(name, VariableValue.NewNumber(value));
+            }
+
+            private void AssertValue(string name, string value)
+            {
+                AssertValue(name, VariableValue.NewString(value));
             }
 
             private void AssertValue(string name, VariableValue value)
@@ -818,7 +963,7 @@ namespace Vim.UnitTest
             {
                 Create("");
                 ParseAndRun(@"let x= 'oo'");
-                AssertValue("x", VariableValue.NewString("oo"));
+                AssertValue("x", "oo");
             }
 
             [Fact]
@@ -835,6 +980,41 @@ namespace Vim.UnitTest
                 Create("");
                 ParseAndRun(@"let x = 42");
                 AssertValue("x", 42);
+            }
+
+            [Fact]
+            public void RHSCanBeArbitraryExpression()
+            {
+                Create("");
+                UnnamedRegister.UpdateValue("Hello, world!");
+                ParseAndRun("let x=@\"");
+                AssertValue("x", "Hello, world!");
+            }
+
+            [Fact]
+            public void RHSCanBeBinaryExpression()
+            {
+                Create("");
+                ParseAndRun("let x=1+2");
+                AssertValue("x", 3);
+            }
+
+            [Fact]
+            public void LHSCanBeRegisterName()
+            {
+                Create("");
+                ParseAndRun("let @a='copy by assign'");
+                var register = RegisterMap.GetRegister(RegisterName.NewNamed(NamedRegister.NameA));
+                Assert.Equal("copy by assign", register.StringValue);
+            }
+
+            [Fact]
+            public void CannotSetVariableToErrorValue()
+            {
+                Create("");
+                _variableMap["x"] = VariableValue.NewNumber(2);
+                ParseAndRun("let x = &fakeoption");
+                AssertValue("x", 2);
             }
         }
 
@@ -1836,11 +2016,11 @@ namespace Vim.UnitTest
             /// Simple visual studio command
             /// </summary>
             [Fact]
-            public void VisualStudioCommand_Simple()
+            public void HostCommand_Simple()
             {
                 Create("");
                 var didRun = false;
-                VimHost.RunVisualStudioCommandFunc =
+                VimHost.RunHostCommandFunc =
                     (textView, command, argument) =>
                     {
                         Assert.Equal("Build.BuildSelection", command);
@@ -1855,11 +2035,11 @@ namespace Vim.UnitTest
             /// Simple visual studio command with an argument
             /// </summary>
             [Fact]
-            public void VisualStudioCommand_WithArgument()
+            public void HostCommand_WithArgument()
             {
                 Create("");
                 var didRun = false;
-                VimHost.RunVisualStudioCommandFunc =
+                VimHost.RunHostCommandFunc =
                     (textView, command, argument) =>
                     {
                         Assert.Equal("Build.BuildSelection", command);
@@ -1870,11 +2050,73 @@ namespace Vim.UnitTest
                 Assert.True(didRun);
             }
 
+            /// <summary>
+            /// This came up as a part of Issue 1038.  Numbers should be considered as part of the host 
+            /// command name
+            /// </summary>
+            [Fact]
+            public void HostCommand_WithNumber()
+            {
+                Create("");
+                var didRun = false;
+                VimHost.RunHostCommandFunc =
+                    (textView, command, argument) =>
+                    {
+                        Assert.Equal("Command1", command);
+                        Assert.Equal("Arg2", argument);
+                        didRun = true;
+                    };
+                ParseAndRun("vsc Command1 Arg2");
+                Assert.True(didRun);
+            }
+
             public void Issue1328()
             {
                 Create("");
                 ParseAndRun(":set backspace=2");
                 Assert.True(_globalSettings.IsBackspaceEol && _globalSettings.IsBackspaceStart && _globalSettings.IsBackspaceIndent);
+            }
+        }
+
+        public sealed class RunTabOnlyTest : InterpreterTest
+        {
+            [Fact]
+            public void TabonlyClosesOtherWindows()
+            {
+                Create();
+                ParseAndRun("tabonly");
+                Assert.True(VimHost.ClosedOtherTabs);
+            }
+        }
+
+        public sealed class RunOnlyTest : InterpreterTest
+        {
+            [Fact]
+            public void TabonlyClosesOtherWindows()
+            {
+                Create();
+                ParseAndRun("only");
+                Assert.True(VimHost.ClosedOtherWindows);
+            }
+        }
+
+        public sealed class GoToTabTest : InterpreterTest
+        {
+            [Fact]
+            public void TabFirstGoesToFirstTab()
+            {
+                Create();
+                ParseAndRun("tabfirst");
+                Assert.Equal(0, VimHost.GoToTabData);
+            }
+
+            [Fact]
+            public void TabLastGoesToLastTab()
+            {
+                Create();
+                VimHost.TabCount = 3;
+                ParseAndRun("tablast");
+                Assert.Equal(2, VimHost.GoToTabData);
             }
         }
     }

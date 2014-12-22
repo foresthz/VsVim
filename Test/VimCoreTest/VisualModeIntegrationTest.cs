@@ -320,6 +320,15 @@ namespace Vim.UnitTest
                     _vimBuffer.Process("x");
                     Assert.Equal("dog", _textView.GetLine(0).GetText());
                 }
+
+                [Fact]
+                public void Issue1507()
+                {
+                    Create("cat", "dog", "fish");
+                    _textView.MoveCaretTo(1);
+                    _vimBuffer.Process("vjllx");
+                    Assert.Equal(new[] { "cfish" }, _textBuffer.GetLines());
+                }
             }
 
             public sealed class BlockTest : DeleteSelectionTest
@@ -500,6 +509,17 @@ namespace Vim.UnitTest
                 Assert.Equal("cat   ", _textView.GetSelectionSpan().GetText());
                 Assert.Equal(6, _textView.GetCaretPoint().Position);
             }
+
+            /// <summary>
+            /// The initial character selection in exclusive selection should be empty 
+            /// </summary>
+            [Fact]
+            public void Issue1483()
+            {
+                Create("cat dog");
+                _vimBuffer.Process("v");
+                Assert.Equal(0, _textView.GetSelectionSpan().Length);
+            }
         }
 
         public abstract class BlockInsertTest : VisualModeIntegrationTest
@@ -527,12 +547,12 @@ namespace Vim.UnitTest
                     // and replace with the "completed" text
                     _textBuffer.Replace(new Span(0, 0), "protected");
                     _vimBuffer.ProcessNotation("<Esc>");
-                    Assert.Equal(new [] 
+                    Assert.Equal(new[] 
                         {
                             "protected string Prop1",
                             "protected string Prop2",
                             "protected string Prop3"
-                        }, 
+                        },
                         _textBuffer.GetLines());
                 }
 
@@ -549,12 +569,12 @@ namespace Vim.UnitTest
                     // and replace with the "completed" text
                     _textBuffer.Replace(new Span(0, 2), "protected");
                     _vimBuffer.ProcessNotation("<Esc>");
-                    Assert.Equal(new [] 
+                    Assert.Equal(new[] 
                         {
                             "protected string Prop1",
                             "protected string Prop2",
                             "protected string Prop3"
-                        }, 
+                        },
                         _textBuffer.GetLines());
                 }
             }
@@ -744,7 +764,7 @@ namespace Vim.UnitTest
                 {
                     Create("cat", "dog", "fish", "store");
                     _vimBuffer.ProcessNotation("<C-q>j<S-i>xy<BS><Esc>jj.");
-                    Assert.Equal(new[] { "xcat", "xdog", "xfish" , "xstore" }, _textBuffer.GetLines());
+                    Assert.Equal(new[] { "xcat", "xdog", "xfish", "xstore" }, _textBuffer.GetLines());
                 }
 
                 /// <summary>
@@ -756,7 +776,7 @@ namespace Vim.UnitTest
                 {
                     Create("cat", "dog", "fish", "store");
                     _vimBuffer.ProcessNotation("<C-q>j<S-i>xy<BS><BS><Esc>jj.");
-                    Assert.Equal(new[] { "cat", "dog", "fish" , "store" }, _textBuffer.GetLines());
+                    Assert.Equal(new[] { "cat", "dog", "fish", "store" }, _textBuffer.GetLines());
                 }
 
                 [Fact]
@@ -917,7 +937,7 @@ namespace Vim.UnitTest
                 /// though total because the 'd' occupies part of the tab width.  Need to resolve
                 /// this 
                 /// </summary>
-                [Fact(Skip="Need to actually fix this test once and for all")]
+                [Fact(Skip = "Need to actually fix this test once and for all")]
                 public void Overlap()
                 {
                     Create("cat", "d\tog");
@@ -955,6 +975,29 @@ namespace Vim.UnitTest
                 Assert.Equal(ModeKind.Normal, _vimBuffer.ModeKind);
                 Assert.Equal("cat", _textBuffer.GetLine(0).GetText());
                 Assert.Equal(0, _textView.GetCaretPoint().Position);
+            }
+        }
+
+        public sealed class SelectionTest : VisualModeIntegrationTest
+        {
+            /// <summary>
+            /// In Visual Mode it is possible to move the caret past the end of the line even if
+            /// 'virtualedit='.  
+            /// </summary>
+            [Fact]
+            public void MoveToEndOfLineCharacter()
+            {
+                Create("cat", "dog");
+                _vimBuffer.Process("vlll");
+                Assert.Equal(3, _textView.GetCaretPoint().Position);
+            }
+
+            [Fact]
+            public void MoveToEndOfLineLine()
+            {
+                Create("cat", "dog");
+                _vimBuffer.Process("Vlll");
+                Assert.Equal(3, _textView.GetCaretPoint().Position);
             }
         }
 
@@ -2349,6 +2392,20 @@ namespace Vim.UnitTest
                 _vimBuffer.Process("vib");
                 Assert.Equal("dog", _textView.GetSelectionSpan().GetText());
                 Assert.Equal(7, _textView.GetCaretPoint().Position);
+            }
+
+            /// <summary>
+            /// Ensure the iB motion excludes the brackets and puts the caret on the last 
+            /// character
+            /// </summary>
+            [Fact]
+            public void TextObject_InnerBlock()
+            {
+                Create("int foo (bar b)", "{", "if (true)", "{", "int a;", "int b;", "}", "}");
+                _textView.MoveCaretToLine(4);
+                _vimBuffer.Process("viB");
+                Assert.Equal(_textBuffer.GetLineRange(4, 5).GetText(), _textView.GetSelectionSpan().GetText());
+                Assert.Equal(47, _textView.GetCaretPoint().Position);
             }
 
             /// <summary>

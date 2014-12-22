@@ -335,7 +335,7 @@ type FunctionDefinition = {
     Name : string
 
     /// Arguments to the function
-    Arguments : string list
+    Parameters : string list
 
     /// Is the function responsible for its ranges
     IsRange : bool
@@ -394,6 +394,21 @@ and [<RequireQualifiedAccess>] Expression =
 
     /// A constant value
     | ConstantValue of VariableValue 
+
+    /// The name of an option/setting
+    | OptionName of string
+
+    /// The name of a register
+    | RegisterName of RegisterName
+
+    /// The name of a variable
+    | VariableName of VariableName
+
+    /// Invocation of a function
+    | FunctionCall of VariableName * Expression list
+
+    /// List of expressions
+    | List of Expression list
 
 and [<RequireQualifiedAccess>] LineCommand =
 
@@ -462,6 +477,12 @@ and [<RequireQualifiedAccess>] LineCommand =
     /// Display the specified let value
     | DisplayLet of VariableName list
 
+    // The :echo command
+    | Echo of Expression
+
+    // The :execute command
+    | Execute of Expression
+
     /// The :edit command.  The values range as follows
     ///  - ! option present
     ///  - The provided ++opt
@@ -494,6 +515,9 @@ and [<RequireQualifiedAccess>] LineCommand =
 
     /// Print out the default history 
     | History
+
+    /// Run a host command.  The first string is the command and the second string is the argument
+    | HostCommand of string * string
 
     /// Process the 'split' command.  The values range as follows
     ///  - Height of the window if specified.  Expressed as a range.  The actual documentation
@@ -528,7 +552,10 @@ and [<RequireQualifiedAccess>] LineCommand =
     | JumpToLastLine
 
     // Let command.  The first item is the name and the second is the value
-    | Let of VariableName * VariableValue
+    | Let of VariableName * Expression
+
+    // Let command applied to a register. The first item is the name and the second is the value
+    | LetRegister of RegisterName * Expression
 
     /// Make command.  The options are as follows
     ///   - The ! option
@@ -544,6 +571,9 @@ and [<RequireQualifiedAccess>] LineCommand =
 
     /// This is a line command that does nothing on execution
     | Nop
+
+    // Close all windows but this one in the current tab
+    | Only
 
     /// There was a parse error on the specified line
     | ParseError of string
@@ -622,6 +652,9 @@ and [<RequireQualifiedAccess>] LineCommand =
     /// Process the 'source' command.  
     | Source of bool * string
 
+    // Close all tabs but this one
+    | TabOnly
+
     /// Process the 'tabnew' / 'tabedit' commands.  The optional string represents the file path 
     | TabNew of string option
 
@@ -648,10 +681,6 @@ and [<RequireQualifiedAccess>] LineCommand =
     /// Unmap the key notation in the given modes
     | UnmapKeys of string * KeyRemapMode list * KeyMapArgument list
 
-    /// Run a visual studio command (or really any custom host command).  The first string is the
-    /// command and the second string in the argument
-    | VisualStudioCommand of string * string
-
     /// Write the 
     ///  - The line range to write out
     ///  - Whether or not a ! was provided
@@ -674,6 +703,15 @@ with
 
     member x.Failed = 
         not x.Succeeded
+
+[<NoComparison>]
+[<NoEquality>]
+[<RequireQualifiedAccess>]
+type BuiltinFunctionCall =
+    | Escape of string * string
+    | Exists of string
+    | Localtime
+    | Nr2char of int
 
 /// Engine which interprets Vim commands and expressions
 type IVimInterpreter =

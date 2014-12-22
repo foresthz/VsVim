@@ -1,7 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using Microsoft.VisualStudio.Text.Operations;
 using Xunit;
 using Moq;
@@ -26,6 +23,16 @@ namespace Vim.UI.Wpf.UnitTest
                 base(textBufferFactoryService, textEditorFactoryService, textDocumentFactoryService, editorOperationsFactoryService)
             {
 
+            }
+
+            public override void CloseAllOtherTabs(ITextView textView)
+            {
+                throw new NotImplementedException();
+            }
+
+            public override void CloseAllOtherWindows(ITextView textView)
+            {
+                throw new NotImplementedException();
             }
 
             public override void FormatLines(ITextView textView, EditorUtils.SnapshotLineRange range)
@@ -88,7 +95,7 @@ namespace Vim.UI.Wpf.UnitTest
                 throw new NotImplementedException();
             }
 
-            public override void RunVisualStudioCommand(ITextView textView, string command, string argument)
+            public override void RunHostCommand(ITextView textView, string command, string argument)
             {
                 throw new NotImplementedException();
             }

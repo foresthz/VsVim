@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using Vim;
 
 namespace Vim.VisualStudio
@@ -17,6 +18,12 @@ namespace Vim.VisualStudio
     public interface IKeyBindingService
     {
         ConflictingKeyBindingState ConflictingKeyBindingState { get; }
+
+        /// <summary>
+        /// Be default only important edit key binding scopes will be considered.  When this is true all 
+        /// scopes (edit or not) will be considered 
+        /// </summary>
+        bool IncludeAllScopes { get; set; }
 
         event EventHandler ConflictingKeyBindingStateChanged;
 
@@ -45,5 +52,10 @@ namespace Vim.VisualStudio
         /// Ignore the conflicts
         /// </summary>
         void IgnoreAnyConflicts(); 
+
+        /// <summary>
+        /// Dump the contents of the Visual Studio keyboard layout to the given StreamWriter
+        /// </summary>
+        void DumpKeyboard(StreamWriter streamWriter);
     }
 }

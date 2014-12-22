@@ -131,8 +131,10 @@ type Parser
         ("delete","d")
         ("delmarks", "delm")
         ("display","di")
+        ("echo", "ec")
         ("edit", "e")
         ("else", "el")
+        ("execute", "exe")
         ("elseif", "elsei")
         ("endfunction", "endf")
         ("endif", "en")
@@ -151,6 +153,7 @@ type Parser
         ("make", "mak")
         ("marks", "")
         ("nohlsearch", "noh")
+        ("only", "on")
         ("pwd", "pw")
         ("print", "p")
         ("Print", "P")
@@ -175,6 +178,7 @@ type Parser
         ("tabnew", "tabnew")
         ("tabnext", "tabn")
         ("tabNext", "tabN")
+        ("tabonly", "tabo")
         ("tabprevious", "tabp")
         ("tabrewind", "tabr")
         ("undo", "u")
@@ -1073,12 +1077,12 @@ type Parser
             // Lower case names are allowed when the name is prefixed with <SID> or s: 
             let isScriptLocal = x.ParseScriptLocalPrefix()
             let! name = parseFunctionName isScriptLocal
-            let! args = parseFunctionArguments ()
+            let! parameters = parseFunctionArguments ()
             let isAbort, isDict, isRange, isError = parseModifiers ()
 
             let func = { 
                 Name = name
-                Arguments = args
+                Parameters = parameters
                 IsRange = isRange
                 IsAbort = isAbort
                 IsDictionary = isDict
@@ -1451,6 +1455,7 @@ type Parser
                 elif c = '"' then
                     builder.ToString()
                     |> VariableValue.String
+                    |> Expression.ConstantValue
                     |> ParseResult.Succeeded
                 else
                     builder.AppendChar c
@@ -1484,7 +1489,10 @@ type Parser
             | '\'' ->
                 // Found the terminating character
                 _tokenizer.MoveNextChar()
-                result <- builder.ToString() |> VariableValue.String |> ParseResult.Succeeded
+                result <- builder.ToString()
+                |> VariableValue.String
+                |> Expression.ConstantValue
+                |> ParseResult.Succeeded
                 isDone <- true
             | c ->
                 builder.AppendChar c
@@ -1567,10 +1575,12 @@ type Parser
             | _ -> None
 
         use flags = _tokenizer.SetTokenizerFlagsScoped TokenizerFlags.SkipBlanks
+        _tokenizer.SetTokenizerFlagsScoped TokenizerFlags.AllowDigitsInWord |> ignore
         match _tokenizer.CurrentTokenKind with
         | TokenKind.Word word ->
             _tokenizer.MoveNextToken()
             if _tokenizer.CurrentChar = ':' then
+                _tokenizer.MoveNextToken()
                 match _tokenizer.CurrentTokenKind, parseNameScope word with
                 | TokenKind.Word name, Some nameScope -> 
                     _tokenizer.MoveNextToken()
@@ -1585,11 +1595,12 @@ type Parser
     /// Parse out a visual studio command.  The format is "commandName argument".  The command
     /// name can use letters, numbers and a period.  The rest of the line after will be taken
     /// as the argument
-    member x.ParseVisualStudioCommand() = 
+    member x.ParseHostCommand() = 
         x.SkipBlanks()
         let command = x.ParseWhile (fun token -> 
             match token.TokenKind with 
             | TokenKind.Word _ -> true
+            | TokenKind.Number _ -> true
             | TokenKind.Character '.' -> true
             | TokenKind.Character '_' -> true
             | _ -> false)
@@ -1598,7 +1609,7 @@ type Parser
         | Some command ->
             x.SkipBlanks()
             let argument = x.ParseRestOfLine()
-            LineCommand.VisualStudioCommand (command, argument)
+            LineCommand.HostCommand (command, argument)
 
     member x.ParseWrite lineRange = 
         let hasBang = x.ParseBang()
@@ -1701,6 +1712,28 @@ type Parser
         let joinKind = if hasBang then JoinKind.KeepEmptySpaces else JoinKind.RemoveEmptySpaces
         LineCommand.Join (lineRange, joinKind)
 
+    /// Parse out the :echo command
+    member x.ParseEcho () = 
+        use reset = _tokenizer.SetTokenizerFlagsScoped TokenizerFlags.AllowDoubleQuote
+        x.SkipBlanks()
+        if _tokenizer.IsAtEndOfLine then
+            LineCommand.Nop
+        else
+            match x.ParseExpressionCore() with
+            | ParseResult.Failed msg -> LineCommand.ParseError msg
+            | ParseResult.Succeeded expr -> LineCommand.Echo expr
+
+    /// Parse out the :execute command
+    member x.ParseExecute () = 
+        use flags = _tokenizer.SetTokenizerFlagsScoped TokenizerFlags.AllowDoubleQuote
+        x.SkipBlanks()
+        if _tokenizer.IsAtEndOfLine then
+            LineCommand.Nop
+        else
+            match x.ParseExpressionCore() with
+            | ParseResult.Failed msg -> LineCommand.ParseError msg
+            | ParseResult.Succeeded expr -> LineCommand.Execute expr
+
     /// Parse out the :let command
     member x.ParseLet () = 
         use flags = _tokenizer.SetTokenizerFlagsScoped TokenizerFlags.SkipBlanks
@@ -1721,13 +1754,25 @@ type Parser
                 LineCommand.DisplayLet names)
 
         match _tokenizer.CurrentTokenKind with
+        | TokenKind.Character '@' ->
+            _tokenizer.MoveNextToken()
+            match x.ParseRegisterName ParseRegisterName.All with
+            | Some registerName ->
+                if _tokenizer.CurrentChar = '=' then
+                    _tokenizer.MoveNextToken()
+                    match x.ParseExpressionCore() with
+                    | ParseResult.Succeeded expr -> LineCommand.LetRegister (registerName, expr)
+                    | ParseResult.Failed msg -> LineCommand.ParseError msg
+                else
+                    LineCommand.ParseError Resources.Parser_Error
+            | None -> LineCommand.ParseError "Invalid register name"
         | TokenKind.Word name ->
             match x.ParseVariableName() with
             | ParseResult.Succeeded name ->
                 if _tokenizer.CurrentChar = '=' then
                     _tokenizer.MoveNextToken()
-                    match x.ParseSingleValue() with
-                    | ParseResult.Succeeded value -> LineCommand.Let (name, value)
+                    match x.ParseExpressionCore() with
+                    | ParseResult.Succeeded expr -> LineCommand.Let (name, expr)
                     | ParseResult.Failed msg -> LineCommand.ParseError msg
                 else
                     parseDisplayLet name
@@ -2010,8 +2055,10 @@ type Parser
                 | "delete" -> x.ParseDelete lineRange
                 | "delmarks" -> noRange (fun () -> x.ParseDeleteMarks())
                 | "display" -> noRange x.ParseDisplayRegisters 
+                | "echo" -> noRange x.ParseEcho
                 | "edit" -> noRange x.ParseEdit
                 | "else" -> noRange x.ParseElse
+                | "execute" -> noRange x.ParseExecute
                 | "elseif" -> noRange x.ParseElseIf
                 | "endfunction" -> noRange x.ParseFunctionEnd
                 | "endif" -> noRange x.ParseIfEnd
@@ -2046,6 +2093,7 @@ type Parser
                 | "noremap"-> noRange (fun () -> x.ParseMapKeysNoRemap true [KeyRemapMode.Normal;KeyRemapMode.Visual; KeyRemapMode.Select;KeyRemapMode.OperatorPending])
                 | "omap"-> noRange (fun () -> x.ParseMapKeys false [KeyRemapMode.OperatorPending])
                 | "omapclear" -> noRange (fun () -> x.ParseMapClear false [KeyRemapMode.OperatorPending])
+                | "only" -> noRange (fun () -> LineCommand.Only)
                 | "onoremap"-> noRange (fun () -> x.ParseMapKeysNoRemap false [KeyRemapMode.OperatorPending])
                 | "ounmap" -> noRange (fun () -> x.ParseMapUnmap false [KeyRemapMode.OperatorPending])
                 | "put" -> x.ParsePut lineRange
@@ -2076,6 +2124,7 @@ type Parser
                 | "tabnew" -> noRange x.ParseTabNew
                 | "tabnext" -> noRange x.ParseTabNext 
                 | "tabNext" -> noRange x.ParseTabPrevious
+                | "tabonly" -> noRange (fun () -> LineCommand.TabOnly)
                 | "tabprevious" -> noRange x.ParseTabPrevious
                 | "undo" -> noRange (fun () -> LineCommand.Undo)
                 | "unlet" -> noRange x.ParseUnlet
@@ -2084,7 +2133,7 @@ type Parser
                 | "vglobal" -> x.ParseGlobalCore lineRange false
                 | "vmap"-> noRange (fun () -> x.ParseMapKeys false [KeyRemapMode.Visual;KeyRemapMode.Select])
                 | "vmapclear" -> noRange (fun () -> x.ParseMapClear false [KeyRemapMode.Visual; KeyRemapMode.Select])
-                | "vscmd" -> x.ParseVisualStudioCommand()
+                | "vscmd" -> x.ParseHostCommand()
                 | "vsplit" -> x.ParseSplit LineCommand.VerticalSplit lineRange
                 | "vnoremap"-> noRange (fun () -> x.ParseMapKeysNoRemap false [KeyRemapMode.Visual;KeyRemapMode.Select])
                 | "vunmap" -> noRange (fun () -> x.ParseMapUnmap false [KeyRemapMode.Visual;KeyRemapMode.Select])
@@ -2133,14 +2182,53 @@ type Parser
         | LineCommand.IfStart expr -> x.ParseIf expr
         | lineCommand -> lineCommand
 
-    /// Parse out a single expression
-    member x.ParseSingleExpression() =
-        match x.ParseSingleValue() with
+    // Parse out the name of a setting/option
+    member x.ParseOptionName() =
+        _tokenizer.MoveNextToken()
+        let tokenKind = _tokenizer.CurrentTokenKind
+        _tokenizer.MoveNextToken()
+        match tokenKind with
+        | TokenKind.Word word ->
+            Expression.OptionName word |> ParseResult.Succeeded
+        | _ -> ParseResult.Failed "Option name missing"
+
+    member x.ParseList() =
+        let rec parseList atBeginning =
+            let recursivelyParseItems() =
+                match x.ParseSingleExpression() with
+                | ParseResult.Succeeded item ->
+                    match parseList false with
+                    | ParseResult.Succeeded otherItems -> item :: otherItems |> ParseResult.Succeeded
+                    | ParseResult.Failed msg -> ParseResult.Failed msg
+                | ParseResult.Failed msg -> ParseResult.Failed msg
+            match _tokenizer.CurrentTokenKind with
+            | TokenKind.Character '[' ->
+                _tokenizer.MoveNextToken()
+                parseList true
+            | TokenKind.Character ']' ->
+                _tokenizer.MoveNextToken()
+                ParseResult.Succeeded []
+            | TokenKind.Character ',' ->
+                _tokenizer.MoveNextToken()
+                x.SkipBlanks()
+                recursivelyParseItems()
+            | _ ->
+                if atBeginning then recursivelyParseItems()
+                else ParseResult.Failed Resources.Parser_Error
+        match parseList true with
+        | ParseResult.Succeeded expressionList -> Expression.List expressionList |> ParseResult.Succeeded
         | ParseResult.Failed msg -> ParseResult.Failed msg
-        | ParseResult.Succeeded value -> Expression.ConstantValue value |> ParseResult.Succeeded
+
+    member x.ParseDictionary() =
+        _tokenizer.MoveNextToken()
+        match _tokenizer.CurrentTokenKind with
+        | TokenKind.Character '}' ->
+            _tokenizer.MoveNextToken()
+            VariableValue.Dictionary Map.empty |> Expression.ConstantValue |> ParseResult.Succeeded
+        | _ -> ParseResult.Failed Resources.Parser_Error
 
     /// Parse out a single expression
-    member x.ParseSingleValue() =
+    member x.ParseSingleExpression() =
         // Re-examine the current token based on the knowledge that double quotes are
         // legal in this context as a real token
         use reset = _tokenizer.SetTokenizerFlagsScoped TokenizerFlags.AllowDoubleQuote
@@ -2149,10 +2237,55 @@ type Parser
             x.ParseStringConstant()
         | TokenKind.Character '\'' -> 
             x.ParseStringLiteral()
+        | TokenKind.Character '&' ->
+            x.ParseOptionName()
+        | TokenKind.Character '[' ->
+            x.ParseList()
+        | TokenKind.Character '{' ->
+            x.ParseDictionary()
+        | TokenKind.Character '@' ->
+            _tokenizer.MoveNextToken()
+            match x.ParseRegisterName ParseRegisterName.All with
+            | Some name -> Expression.RegisterName name |>  ParseResult.Succeeded
+            | None -> ParseResult.Failed "Unrecognized register name"
         | TokenKind.Number number -> 
             _tokenizer.MoveNextToken()
-            VariableValue.Number number |> ParseResult.Succeeded
-        | _ -> ParseResult.Failed "Invalid expression"
+            VariableValue.Number number |> Expression.ConstantValue |> ParseResult.Succeeded
+        | _ ->
+            match x.ParseVariableName() with
+            | ParseResult.Failed msg -> ParseResult.Failed msg
+            | ParseResult.Succeeded variable -> // TODO the nesting is getting deep here; refactor
+                x.SkipBlanks()
+                match _tokenizer.CurrentTokenKind with
+                | TokenKind.Character '(' ->
+                    match x.ParseFunctionArguments true with
+                    | ParseResult.Succeeded args ->
+                        Expression.FunctionCall(variable, args) |> ParseResult.Succeeded
+                    | ParseResult.Failed msg -> ParseResult.Failed msg
+                | _ -> Expression.VariableName variable |> ParseResult.Succeeded
+
+    member x.ParseFunctionArguments atBeginning =
+        let recursivelyParseArguments() =
+            match x.ParseSingleExpression() with
+            | ParseResult.Succeeded arg ->
+                match x.ParseFunctionArguments false with
+                | ParseResult.Succeeded otherArgs -> arg :: otherArgs |> ParseResult.Succeeded
+                | ParseResult.Failed msg -> ParseResult.Failed msg
+            | ParseResult.Failed msg -> ParseResult.Failed msg
+        match _tokenizer.CurrentTokenKind with
+        | TokenKind.Character '(' ->
+            _tokenizer.MoveNextToken()
+            x.ParseFunctionArguments true
+        | TokenKind.Character ')' ->
+            _tokenizer.MoveNextToken()
+            ParseResult.Succeeded []
+        | TokenKind.Character ',' ->
+            _tokenizer.MoveNextToken()
+            x.SkipBlanks()
+            recursivelyParseArguments()
+        | _ ->
+            if atBeginning then recursivelyParseArguments()
+            else ParseResult.Failed "invalid arguments for function"
 
     /// Parse out a complete expression from the text.  
     member x.ParseExpressionCore() =

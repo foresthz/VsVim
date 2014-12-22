@@ -31,6 +31,29 @@ type internal NumberValue =
         | Hex _ -> NumberFormat.Hex
         | Alpha _ -> NumberFormat.Alpha
 
+/// There are some commands which if began in normal mode must end in normal 
+/// mode (undo and redo).  In general this is easy, don't switch modes.  But often
+/// the code needs to call out to 3rd party code which can change the mode by 
+/// altering the selection.  
+///
+/// This is a simple IDisposable type which will put us back into normal mode
+/// if this happens. 
+type internal NormalModeSelectionGuard
+    (
+        _vimBufferData : IVimBufferData
+    ) =
+
+    let _beganInNormalMode = _vimBufferData.VimTextBuffer.ModeKind = ModeKind.Normal
+
+    member x.Dispose() = 
+        let selection = _vimBufferData.TextView.Selection
+        if _beganInNormalMode && not selection.IsEmpty then
+            selection.Clear()
+            _vimBufferData.VimTextBuffer.SwitchMode ModeKind.Normal ModeArgument.None |> ignore
+
+    interface System.IDisposable with
+        member x.Dispose() = x.Dispose()
+
 /// This type houses the functionality behind a large set of the available
 /// Vim commands.
 ///
@@ -546,6 +569,10 @@ type internal CommandUtil
         _vimHost.Close _textView 
         CommandResult.Completed ModeSwitch.NoSwitch
 
+    member x.CloseWindow() =
+        _commonOperations.CloseWindowUnlessDirty()
+        CommandResult.Completed ModeSwitch.NoSwitch
+
     /// Create a possibly LineWise register value with the specified string value at the given 
     /// point.  This is factored out here because a LineWise value in vim should always
     /// end with a new line but we can't always guarantee the text we are working with 
@@ -1040,6 +1067,26 @@ type internal CommandUtil
         else _commonOperations.GoToFile()
 
         CommandResult.Completed ModeSwitch.NoSwitch
+
+    /// GoTo the file name under the cursor using a new window (tab)
+    member x.GoToFileInSelectionInNewWindow (visualSpan : VisualSpan) =
+        let goToFile name = 
+            _commonOperations.GoToFileInNewWindow name
+            CommandResult.Completed (ModeSwitch.SwitchMode ModeKind.Normal)
+        match visualSpan with
+        | VisualSpan.Character span -> span.Span.GetText() |> goToFile
+        | VisualSpan.Line span -> span.GetText() |> goToFile
+        | VisualSpan.Block _ -> CommandResult.Completed ModeSwitch.NoSwitch
+
+    /// GoTo the file name under the cursor in the same window
+    member x.GoToFileInSelection (visualSpan : VisualSpan) =
+        let goToFile name = 
+            _commonOperations.GoToFile name
+            CommandResult.Completed (ModeSwitch.SwitchMode ModeKind.Normal)
+        match visualSpan with
+        | VisualSpan.Character span -> span.Span.GetText() |> goToFile
+        | VisualSpan.Line span -> span.GetText() |> goToFile
+        | VisualSpan.Block _ -> CommandResult.Completed ModeSwitch.NoSwitch
 
     /// Go to the global declaration of the word under the caret
     member x.GoToGlobalDeclaration () =
@@ -1873,6 +1920,16 @@ type internal CommandUtil
 
         CommandResult.Completed ModeSwitch.SwitchPreviousMode
 
+    member x.PrintFileInformation() =
+        let filePath = _vimHost.GetName _textBuffer
+        let lineCount = _textBuffer.CurrentSnapshot.LineCount
+        let percent = 
+            let caretLine = x.CaretLineNumber
+            int ((single caretLine) / (single lineCount))
+        let msg = sprintf "%s %d lines --%d%%--" filePath lineCount percent
+        _statusUtil.OnStatus msg
+        CommandResult.Completed ModeSwitch.NoSwitch
+
     /// Start a macro recording
     member x.RecordMacroStart c = 
         let isAppend, c = 
@@ -1909,6 +1966,7 @@ type internal CommandUtil
 
     /// Redo count operations in the ITextBuffer
     member x.Redo count = 
+        use guard = new NormalModeSelectionGuard(_vimBufferData)
         _commonOperations.Redo count
         CommandResult.Completed ModeSwitch.NoSwitch
 
@@ -2265,6 +2323,7 @@ type internal CommandUtil
         | NormalCommand.CloseAllFolds -> x.CloseAllFolds()
         | NormalCommand.CloseAllFoldsUnderCaret -> x.CloseAllFoldsUnderCaret()
         | NormalCommand.CloseBuffer -> x.CloseBuffer()
+        | NormalCommand.CloseWindow -> x.CloseWindow()
         | NormalCommand.CloseFoldUnderCaret -> x.CloseFoldUnderCaret count
         | NormalCommand.DeleteAllFoldsInBuffer -> x.DeleteAllFoldsInBuffer()
         | NormalCommand.DeleteAllFoldsUnderCaret -> x.DeleteAllFoldsUnderCaret()
@@ -2306,6 +2365,7 @@ type internal CommandUtil
         | NormalCommand.PutAfterCaretMouse -> x.PutAfterCaretMouse()
         | NormalCommand.PutBeforeCaret moveCaretBeforeText -> x.PutBeforeCaret register count moveCaretBeforeText
         | NormalCommand.PutBeforeCaretWithIndent -> x.PutBeforeCaretWithIndent register count
+        | NormalCommand.PrintFileInformation -> x.PrintFileInformation()
         | NormalCommand.RecordMacroStart c -> x.RecordMacroStart c
         | NormalCommand.RecordMacroStop -> x.RecordMacroStop()
         | NormalCommand.Redo -> x.Redo count
@@ -2365,6 +2425,8 @@ type internal CommandUtil
         | VisualCommand.DeleteLineSelection -> x.DeleteLineSelection register visualSpan
         | VisualCommand.FormatLines -> x.FormatLinesVisual visualSpan
         | VisualCommand.FoldSelection -> x.FoldSelection visualSpan
+        | VisualCommand.GoToFileInSelectionInNewWindow -> x.GoToFileInSelectionInNewWindow visualSpan
+        | VisualCommand.GoToFileInSelection -> x.GoToFileInSelection visualSpan
         | VisualCommand.JoinSelection kind -> x.JoinSelection kind visualSpan
         | VisualCommand.InvertSelection columnOnlyInBlock -> x.InvertSelection visualSpan streamSelectionSpan columnOnlyInBlock
         | VisualCommand.MoveCaretToTextObject (motion, textObjectKind)-> x.MoveCaretToTextObject motion textObjectKind visualSpan
@@ -2876,6 +2938,7 @@ type internal CommandUtil
 
     /// Undo count operations in the ITextBuffer
     member x.Undo count = 
+        use guard = new NormalModeSelectionGuard(_vimBufferData)
         _commonOperations.Undo count
         CommandResult.Completed ModeSwitch.NoSwitch
 

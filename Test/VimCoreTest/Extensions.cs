@@ -223,6 +223,20 @@ namespace Vim.UnitTest
 
         #endregion
 
+        #region VimResult<T>
+
+        public static T AsResult<T>(this VimResult<T> vimResult)
+        {
+            return ((VimResult<T>.Result)vimResult).Item;
+        }
+
+        public static string AsError<T>(this VimResult<T> vimResult)
+        {
+            return ((VimResult<T>.Error)vimResult).Item;
+        }
+
+        #endregion
+
         #region SetArgument
 
         /// <summary>
@@ -386,11 +400,19 @@ namespace Vim.UnitTest
         #region Expression
 
         /// <summary>
-        /// Get the suceeded version of the Expression
+        /// Get the succeeded version of the Expression as a constant value
         /// </summary>
         public static Expression.ConstantValue AsConstantValue(this Expression expr)
         {
             return (Expression.ConstantValue)expr;
+        }
+
+        /// <summary>
+        /// Get the succeeded version of the Expression as a list of expressions
+        /// </summary>
+        public static Expression.List AsList(this Expression expr)
+        {
+            return (Expression.List)expr;
         }
 
         public static bool IsParseError(this LineCommand lineCommand, string message)
@@ -408,6 +430,14 @@ namespace Vim.UnitTest
         public static VariableValue.Number AsNumber(this VariableValue value)
         {
             return (VariableValue.Number)value;
+        }
+
+        /// <summary>
+        /// List version of a value
+        /// </summary>
+        public static VariableValue.List AsList(this VariableValue value)
+        {
+            return (VariableValue.List)value;
         }
 
         /// <summary>
@@ -1505,6 +1535,12 @@ namespace Vim.UnitTest
         {
             var name = RegisterNameUtil.CharToRegister(c).Value;
             return map.GetRegister(name);
+        }
+
+        public static void SetRegisterValue(this IRegisterMap map, char c, string value)
+        {
+            var register = GetRegister(map, c);
+            register.UpdateValue(value);
         }
 
         public static bool IsSome<T>(this FSharpOption<T> option, T value)

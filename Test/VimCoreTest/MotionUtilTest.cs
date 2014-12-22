@@ -8,6 +8,8 @@ using Moq;
 using Vim.Extensions;
 using Vim.UnitTest.Mock;
 using Xunit;
+using Xunit.Extensions;
+using Xunit.Sdk;
 
 namespace Vim.UnitTest
 {
@@ -372,6 +374,66 @@ namespace Vim.UnitTest
                 var data = _motionUtil.QuotedString('`');
                 Assert.True(data.IsSome());
                 AssertData(data.Value, new SnapshotSpan(_snapshot, start - 2, 6), MotionKind.CharacterWiseInclusive);
+            }
+
+            [Fact]
+            public void UnmatchedQuotesFirst()
+            {
+                Create(@"x 'cat'dog'");
+                _textView.MoveCaretTo(3);
+                var data = _motionUtil.QuotedStringContents('\'');
+                Assert.True(data.IsSome());
+                Assert.Equal("cat", data.value.Span.GetText());
+            }
+
+            [Fact]
+            public void UnmatchedQuotesSecond()
+            {
+                Create(@"x 'cat'dog'");
+                _textView.MoveCaretTo(8);
+                var data = _motionUtil.QuotedStringContents('\'');
+                Assert.True(data.IsSome());
+                Assert.Equal("dog", data.value.Span.GetText());
+            }
+
+            /// <summary>
+            /// When landing directly on a quote that has a preceding quote it is always considered the 
+            /// second quote in a string
+            /// </summary>
+            [Fact]
+            public void UnmatchedQuotesMiddleQuote()
+            {
+                Create(@"x 'cat'dog'");
+                _textView.MoveCaretTo(6);
+                Assert.Equal('\'', _textView.GetCaretPoint().GetChar());
+                var data = _motionUtil.QuotedStringContents('\'');
+                Assert.True(data.IsSome());
+                Assert.Equal("cat", data.value.Span.GetText());
+            }
+
+            /// <summary>
+            /// Border between valid string pairs
+            /// </summary>
+            [Fact]
+            public void Border()
+            {
+                Create(@"x 'cat'dog'fish'");
+                _textView.MoveCaretTo(10);
+                Assert.Equal('\'', _textView.GetCaretPoint().GetChar());
+                var data = _motionUtil.QuotedStringContents('\'');
+                Assert.True(data.IsSome());
+                Assert.Equal("fish", data.value.Span.GetText());
+
+            }
+
+            [Fact]
+            public void Issue1454()
+            {
+                Create(@"let x = '\\'");
+                _textView.MoveCaretTo(9);
+                var data = _motionUtil.QuotedStringContents('\'');
+                Assert.True(data.IsSome());
+                Assert.Equal(@"\\", data.Value.Span.GetText());
             }
         }
 
@@ -2368,7 +2430,7 @@ namespace Vim.UnitTest
                 Create("a", "b", "", "c");
                 _textView.MoveCaretToLine(1);
                 var span = _motionUtil.AllParagraph(1).Value.Span;
-                Assert.Equal(_snapshot.GetLineRange(0, 2).ExtentIncludingLineBreak, span);
+                Assert.Equal(_snapshot.GetLineRange(0, 1).ExtentIncludingLineBreak, span);
             }
 
             /// <summary>
@@ -2379,7 +2441,7 @@ namespace Vim.UnitTest
             {
                 Create("a", "b", "", "c");
                 var span = _motionUtil.AllParagraph(1).Value.Span;
-                Assert.Equal(_snapshot.GetLineRange(0, 2).ExtentIncludingLineBreak, span);
+                Assert.Equal(_snapshot.GetLineRange(0, 1).ExtentIncludingLineBreak, span);
             }
 
             /// <summary>
@@ -2514,6 +2576,61 @@ namespace Vim.UnitTest
                 _motionUtil.LastSearch(true, 1);
                 Assert.Equal(data, _vimData.LastSearchData);
                 _statusUtil.Verify();
+            }
+
+            /// <summary>
+            /// Single line inner block test should use inner block beahaviour
+            /// </summary>
+            [Fact]
+            public void GetInnerBlock_Simple()
+            {
+                Create("[cat]");
+                var lines = _motionUtil.InnerBlock(_textBuffer.GetPoint(2), BlockKind.Bracket, 1).Value.Span.GetText();
+                Assert.Equal("cat", lines);
+            }
+
+            /// <summary>
+            /// Multiline inner block test should use inner block beahavior
+            /// </summary>
+            [Fact]
+            public void GetInnerBlock_Lines()
+            {
+                Create("[", "cat", "]");
+                var lines = _motionUtil.InnerBlock(_textBuffer.GetPointInLine(1, 1), BlockKind.Bracket, 1).Value.Span.GetText();
+                Assert.Equal(_textBuffer.GetLine(1).GetText(), lines);
+            }
+
+            /// <summary>
+            /// Lines with whitespace inner block test
+            /// </summary>
+            [Fact]
+            public void GetInnerBlock_LinesAndWhitespace()
+            {
+                Create("", "    [", "      cat", "     ] ", "");
+                var lines = _motionUtil.InnerBlock(_textBuffer.GetPointInLine(2, 1), BlockKind.Bracket, 1).Value.Span.GetText();
+                Assert.Equal(_textBuffer.GetLine(2).GetText(), lines);
+            }
+
+            /// <summary>
+            /// Inner block with content on line with start bracket
+            /// </summary>
+            [Fact]
+            public void GetInnerBlock_ContentOnLineWithOpeningBracket()
+            {
+                Create("[ dog", "  cat", "  ] ");    
+                var lines = _motionUtil.InnerBlock(_textBuffer.GetPointInLine(1, 1), BlockKind.Bracket, 1).Value.Span.GetText();
+                Assert.Equal(" dog" + Environment.NewLine + "  cat", lines);
+            }
+
+            /// <summary>
+            /// Inner block with content on line with start bracket
+            /// </summary>
+            [Fact]
+            public void GetInnerBlock_ContentOnLineWithClosingBracket()
+            {
+                Create("[ ", "  cat", "  dog ] ");    
+                var lines = _motionUtil.InnerBlock(_textBuffer.GetPointInLine(1, 1), BlockKind.Bracket, 1).Value.Span.GetText();
+                Assert.Equal(" " + Environment.NewLine + "  cat" + Environment.NewLine + "  dog ", lines);
             }
 
             /// <summary>

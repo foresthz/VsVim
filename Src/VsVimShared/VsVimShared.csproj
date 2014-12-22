@@ -81,14 +81,17 @@
     <Compile Include="EditCommandKind.cs" />
     <Compile Include="Extensions.cs" />
     <Compile Include="ICommandTarget.cs" />
+    <Compile Include="IExtensionAdapter.cs" />
     <Compile Include="Implementation\ExternalEdit\ExternalEditMonitor.cs" />
     <Compile Include="Implementation\ExternalEdit\ExternalEditorManager.cs" />
     <Compile Include="IExternalEditAdapter.cs" />
+    <Compile Include="Implementation\Misc\ExtensionAdapterBroker.cs" />
     <Compile Include="Implementation\Misc\FallbackKeyProcessorProvider.cs" />
     <Compile Include="Implementation\Misc\FallbackKeyProcessor.cs" />
     <Compile Include="Implementation\Misc\ReportDesignerUtil.cs" />
     <Compile Include="Implementation\Misc\ScopeData.cs" />
     <Compile Include="Implementation\Misc\StandardCommandTarget.cs" />
+    <Compile Include="Implementation\Misc\StatusBarAdapter.cs" />
     <Compile Include="Implementation\OptionPages\ComboBoxTemplateSelector.cs" />
     <Compile Include="Implementation\OptionPages\DefaultOptionPage.cs">
       <SubType>Component</SubType>
@@ -101,6 +104,8 @@
     <Compile Include="Implementation\OptionPages\KeyboardSettingsControl.xaml.cs">
       <DependentUpon>KeyboardSettingsControl.xaml</DependentUpon>
     </Compile>
+    <Compile Include="Implementation\ReSharper\ReSharperExternalEditAdapter.cs" />
+    <Compile Include="Implementation\ReSharper\ReSharperExtensionAdapter.cs" />
     <Compile Include="Implementation\ReSharper\ReSharperKeyUtil.cs" />
     <Compile Include="Implementation\ReSharper\ReSharperUtil.cs" />
     <Compile Include="Implementation\ExternalEdit\SnippetExternalEditAdapter.cs" />
@@ -149,7 +154,6 @@
     <Compile Include="Implementation\VisualAssist\VisualAssistSelectionAdapter.cs" />
     <Compile Include="Implementation\Misc\VsAdapter.cs" />
     <Compile Include="Implementation\Misc\VsVimKeyProcessorProvider.cs" />
-    <Compile Include="IPowerToolsUtil.cs" />
     <Compile Include="IReportDesignerUtil.cs" />
     <Compile Include="Implementation\ReSharper\IResharperUtil.cs" />
     <Compile Include="ITextManager.cs" />

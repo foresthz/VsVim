@@ -531,6 +531,24 @@ namespace Vim.UnitTest
                 _vimBuffer.ProcessNotation("<S-Space>");
                 Assert.Equal(8, _textView.GetCaretPoint().Position);
             }
+
+            /// <summary>
+            /// Don't consider 'smartcase' when doing a * operation 
+            /// </summary>
+            [Fact]
+            public void Issue1511()
+            {
+                Create("foo", "FOO", "foo");
+                _assertOnWarningMessage = false;
+                _globalSettings.IgnoreCase = true;
+                _globalSettings.SmartCase = true;
+                _vimBuffer.Process('*');
+                Assert.Equal(_textBuffer.GetLine(1).Start, _textView.GetCaretPoint());
+                _vimBuffer.Process('*');
+                Assert.Equal(_textBuffer.GetLine(2).Start, _textView.GetCaretPoint());
+                _vimBuffer.Process('*');
+                Assert.Equal(_textBuffer.GetLine(0).Start, _textView.GetCaretPoint());
+            }
         }
 
         public sealed class MatchingTokenTest : NormalModeIntegrationTest
@@ -803,6 +821,15 @@ namespace Vim.UnitTest
             {
                 Create("#if 0", "#if 1", "#else // !1", "#endif // !1", "#endif // 0");
                 AssertPattern(4, 0);
+            }
+
+            [Fact]
+            public void Issue1362()
+            {
+                Create("/*", "abc", "*/", "/*", "def", "*/");
+                _textView.MoveCaretToLine(5);
+                _vimBuffer.Process("%");
+                Assert.Equal(_textView.GetPointInLine(3, 0), _textView.GetCaretPoint());
             }
         }
 
@@ -1969,6 +1996,18 @@ namespace Vim.UnitTest
                     Assert.Equal("cat", _textBuffer.GetLine(0).GetText());
                     Assert.Equal(ModeKind.Normal, _vimBuffer.ModeKind);
                 }
+
+                [Fact]
+                public void Issue1435()
+                {
+                    Create("cat", "dog");
+                    _localSettings.ShiftWidth = 2;
+                    _assertOnErrorMessage = false;
+                    _vimBuffer.Process(":nmap > >> \" better indentation", enter: true);
+                    _vimBuffer.Process(">");
+                    Assert.Equal("  cat", _textBuffer.GetLine(0).GetText());
+                    Assert.Equal("dog", _textBuffer.GetLine(1).GetText());
+                }
             }
         }
 
@@ -2847,6 +2886,50 @@ namespace Vim.UnitTest
                     Create("tree", "cat", "cat?", "dog");
                     _vimBuffer.ProcessNotation("/cat?", enter: true);
                     Assert.Equal(_textBuffer.GetLine(2).Start, _textView.GetCaretPoint());
+                }
+
+                [Fact]
+                public void ErrorUnmatchedOpenParen()
+                {
+                    Create("");
+                    _assertOnErrorMessage = false;
+                    var fired = false;
+                    _vimBuffer.ErrorMessage += (_, e) =>
+                        {
+                            Assert.Equal(e.Message, Resources.Regex_UnmatchedParen);
+                            fired = true;
+                        };
+
+                    _vimBuffer.Process(@"/\v(9", enter: true);
+                    Assert.True(fired);
+                }
+
+                [Fact]
+                public void ErrorUnmatchedOpenBrace()
+                {
+                    Create("");
+                    _assertOnErrorMessage = false;
+                    var fired = false;
+                    _vimBuffer.ErrorMessage += (_, e) =>
+                        {
+                            Assert.Equal(e.Message, Resources.Regex_UnmatchedBrace);
+                            fired = true;
+                        };
+
+                    _vimBuffer.Process(@"/\v{9", enter: true);
+                    Assert.True(fired);
+                }
+
+                [Fact]
+                public void Issue1392()
+                {
+                    Create(" MyOwnData MyOwnData MyOwnData");
+                    _vimBuffer.ProcessNotation(@"/\w\+Data", enter: true);
+                    Assert.Equal(1, _textView.GetCaretPoint().Position);
+                    _vimBuffer.ProcessNotation(@"/\w\+Data", enter: true);
+                    Assert.Equal(11, _textView.GetCaretPoint().Position);
+                    _vimBuffer.ProcessNotation(@"/\w\+Data", enter: true);
+                    Assert.Equal(21, _textView.GetCaretPoint().Position);
                 }
             }
 

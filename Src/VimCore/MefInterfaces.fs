@@ -197,7 +197,7 @@ type IMouseDevice =
     /// Is the left button pressed
     abstract IsLeftButtonPressed : bool
 
-    /// Get the position of the mouse positine within the ITextView
+    /// Get the position of the mouse position within the ITextView
     abstract GetPosition : textView : ITextView -> Nullable<System.Windows.Point>
 
 /// Abstract representation of the keyboard 
@@ -330,6 +330,8 @@ type ICommonOperations =
 
     abstract AdjustCaretForScrollOffset : unit -> unit
 
+    abstract member CloseWindowUnlessDirty : unit -> unit
+
     /// Create a possibly LineWise register value with the specified string value at the given 
     /// point.  This is factored out here because a LineWise value in vim should always
     /// end with a new line but we can't always guarantee the text we are working with 
@@ -363,7 +365,7 @@ type ICommonOperations =
     abstract GetNewLineIndent : contextLine : ITextSnapshotLine -> newLine : ITextSnapshotLine -> int option
 
     /// Get the standard ReplaceData for the given SnapshotPoint
-    abstract GetReplaceData : point : SnapshotPoint -> ReplaceData
+    abstract GetReplaceData : point : SnapshotPoint -> VimRegexReplaceData
 
     /// Get the number of spaces (when tabs are expanded) that is necessary to get to the 
     /// specified point on it's line
@@ -379,8 +381,14 @@ type ICommonOperations =
     /// Go to the file named in the word under the cursor
     abstract GoToFile : unit -> unit
 
+    /// Go to the file name specified as a paramter
+    abstract GoToFile : string -> unit
+
     /// Go to the file named in the word under the cursor in a new window
     abstract GoToFileInNewWindow : unit -> unit
+
+    /// Go to the file name specified as a paramter in a new window
+    abstract GoToFileInNewWindow : string -> unit
 
     /// Go to the local declaration of the word under the cursor
     abstract GoToLocalDeclaration : unit -> unit

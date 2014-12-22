@@ -47,41 +47,29 @@ namespace Vim.VisualStudio
             }
         }
 
-        public static bool TryGetName(this DteCommand command, out string name)
-        {
-            try
-            {
-                name = command.Name;
-                return true;
-            }
-            catch
-            {
-                name = null;
-                return false;
-            }
-        }
-
         /// <summary>
         /// Get the binding strings for this Command.  Digs through the various ways a 
         /// binding string can be stored and returns a uniform result
         /// </summary>
-        public static IEnumerable<string> GetBindings(this DteCommand command)
+        public static IEnumerable<string> GetBindings(this DteCommand command, out Exception ex)
         {
             if (null == command)
             {
                 throw new ArgumentException("command");
             }
 
+            ex = null;
             object bindings;
             try
             {
                 bindings = command.Bindings;
             }
-            catch (Exception)
+            catch (Exception ex2)
             {
                 // Several user reports indicate the above call can throw.  Most commonly
                 // this throws an OutOfMemoryException.  Either way we don't care what the
                 // error is.  We just can't get bindings for this element
+                ex = ex2;
                 return Enumerable.Empty<string>();
             }
 
@@ -101,6 +89,16 @@ namespace Vim.VisualStudio
             }
 
             return Enumerable.Empty<string>();
+        }
+
+        /// <summary>
+        /// Get the binding strings for this Command.  Digs through the various ways a 
+        /// binding string can be stored and returns a uniform result
+        /// </summary>
+        public static IEnumerable<string> GetBindings(this DteCommand command)
+        {
+            Exception unused;
+            return GetBindings(command, out unused);
         }
 
         /// <summary>
@@ -130,7 +128,13 @@ namespace Vim.VisualStudio
                 KeyBinding binding;
                 if (KeyBinding.TryParse(cur, out binding))
                 {
-                    yield return new CommandKeyBinding(commandId, command.Name, binding);
+                    var name = command.Name;
+                    if (String.IsNullOrEmpty(name))
+                    {
+                        name = string.Format("<Unnamed> {0}", commandId.Id);
+                    }
+
+                    yield return new CommandKeyBinding(commandId, name, binding);
                 }
             }
         }
@@ -522,7 +526,12 @@ namespace Vim.VisualStudio
             var ptr = IntPtr.Zero;
             try
             {
-                ErrorHandler.ThrowOnFailure(vsWindowFrame.QueryViewInterface(ref iid, out ptr));
+                var hr = vsWindowFrame.QueryViewInterface(ref iid, out ptr);
+                if (ErrorHandler.Failed(hr))
+                {
+                    return Result.CreateError(hr);
+                }
+
                 return Result.CreateSuccess((IVsCodeWindow)Marshal.GetObjectForIUnknown(ptr));
             }
             catch (Exception e)

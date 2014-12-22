@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.ComponentModel.Composition;
 using System.IO;
 using System.Linq;
@@ -42,6 +43,7 @@ namespace Vim.VisualStudio
             private const string UseEditorIndentName = "vsvim_useeditorindent";
             private const string UseEditorDefaultsName = "vsvim_useeditordefaults";
             private const string UseEditorTabAndBackspaceName = "vsvim_useeditortab";
+            private const string UseEditorCommandMarginName = "vsvim_useeditorcommandmargin";
 
             private readonly IVimApplicationSettings _vimApplicationSettings;
 
@@ -56,6 +58,7 @@ namespace Vim.VisualStudio
                 globalSettings.AddCustomSetting(UseEditorIndentName, UseEditorIndentName, settingsSource);
                 globalSettings.AddCustomSetting(UseEditorDefaultsName, UseEditorDefaultsName, settingsSource);
                 globalSettings.AddCustomSetting(UseEditorTabAndBackspaceName, UseEditorTabAndBackspaceName, settingsSource);
+                globalSettings.AddCustomSetting(UseEditorCommandMarginName, UseEditorCommandMarginName, settingsSource);
             }
 
             SettingValue IVimCustomSettingSource.GetDefaultSettingValue(string name)
@@ -76,6 +79,9 @@ namespace Vim.VisualStudio
                         break;
                     case UseEditorTabAndBackspaceName:
                         value = _vimApplicationSettings.UseEditorTabAndBackspace;
+                        break;
+                    case UseEditorCommandMarginName:
+                        value = _vimApplicationSettings.UseEditorCommandMargin;
                         break;
                     default:
                         value = false;
@@ -104,6 +110,9 @@ namespace Vim.VisualStudio
                     case UseEditorTabAndBackspaceName:
                         _vimApplicationSettings.UseEditorTabAndBackspace = value;
                         break;
+                    case UseEditorCommandMarginName:
+                        _vimApplicationSettings.UseEditorCommandMargin = value;
+                        break;
                     default:
                         value = false;
                         break;
@@ -124,6 +133,7 @@ namespace Vim.VisualStudio
         private readonly IVsMonitorSelection _vsMonitorSelection;
         private readonly IVimApplicationSettings _vimApplicationSettings;
         private readonly ISmartIndentationService _smartIndentationService;
+        private readonly IExtensionAdapterBroker _extensionAdapterBroker;
         private IVim _vim;
 
         internal _DTE DTE
@@ -172,6 +182,7 @@ namespace Vim.VisualStudio
             ITextManager textManager,
             ISharedServiceFactory sharedServiceFactory,
             IVimApplicationSettings vimApplicationSettings,
+            IExtensionAdapterBroker extensionAdapterBroker,
             SVsServiceProvider serviceProvider)
             : base(textBufferFactoryService, textEditorFactoryService, textDocumentFactoryService, editorOperationsFactoryService)
         {
@@ -184,9 +195,20 @@ namespace Vim.VisualStudio
             _vsMonitorSelection = serviceProvider.GetService<SVsShellMonitorSelection, IVsMonitorSelection>();
             _vimApplicationSettings = vimApplicationSettings;
             _smartIndentationService = smartIndentationService;
+            _extensionAdapterBroker = extensionAdapterBroker;
 
             uint cookie;
             _vsMonitorSelection.AdviseSelectionEvents(this, out cookie);
+        }
+
+        public override void CloseAllOtherTabs(ITextView textView)
+        {
+            RunHostCommand(textView, "File.CloseAllButThis", string.Empty);
+        }
+
+        public override void CloseAllOtherWindows(ITextView textView)
+        {
+            CloseAllOtherTabs(textView); // At least for now, :only == :tabonly
         }
 
         private bool SafeExecuteCommand(ITextView contextTextView, string command, string args = "")
@@ -514,7 +536,7 @@ namespace Vim.VisualStudio
             _dte.Quit();
         }
 
-        public override void RunVisualStudioCommand(ITextView textView, string command, string argument)
+        public override void RunHostCommand(ITextView textView, string command, string argument)
         {
             SafeExecuteCommand(textView, command, argument);
         }
@@ -543,6 +565,19 @@ namespace Vim.VisualStudio
             }
         }
 
+        private void MoveFocusHorizontally(int indexDelta)
+        {
+            // Thanks to https://github.com/mrdooz/TabGroupJumper/blob/master/TabGroupJumper/Connect.cs
+            var topLevelWindows = _dte.Windows.Cast<Window>()
+                .Where(window => window.Kind == "Document" && (window.Left > 0))
+                .ToList();
+            topLevelWindows.Sort((a, b) => a.Left < b.Left ? -1 : 1);
+            var indexOfActiveDoc = topLevelWindows.FindIndex(win => win.Document == _dte.ActiveDocument);
+            var movedIndex = indexOfActiveDoc - indexDelta;
+            var newIndex = (movedIndex < 0 ? movedIndex + topLevelWindows.Count : movedIndex % topLevelWindows.Count);
+            topLevelWindows[newIndex].Activate();
+        }
+
         public override void MoveFocus(ITextView textView, Direction direction)
         {
             bool result;
@@ -555,8 +590,11 @@ namespace Vim.VisualStudio
                     result = _textManager.MoveViewDown(textView);
                     break;
                 case Direction.Left:
+                    MoveFocusHorizontally(-1);
+                    result = true;
+                    break;
                 case Direction.Right:
-                    _vim.ActiveStatusUtil.OnError("Not Implemented");
+                    MoveFocusHorizontally(1);
                     result = true;
                     break;
                 default:
@@ -652,6 +690,17 @@ namespace Vim.VisualStudio
                 return true;
             }
 
+            if (_vsAdapter.IsParallelWatchWindowView(textView))
+            {
+                return false;
+            }
+
+            var result = _extensionAdapterBroker.ShouldCreateVimBuffer(textView);
+            if (result.HasValue)
+            {
+                return result.Value;
+            }
+
             if (!base.ShouldCreateVimBuffer(textView))
             {
                 return false;
@@ -676,6 +725,24 @@ namespace Vim.VisualStudio
                     Contract.Assert(false);
                     return base.ShouldIncludeRcFile(vimRcPath);
             }
+        }
+
+        public override bool ShouldKeepSelectionAfterHostCommand(string command, string argument)
+        {
+            if (_extensionAdapterBroker.ShouldKeepSelectionAfterHostCommand(command, argument) ?? false)
+            {
+                return true;
+            }
+
+            var comparer = StringComparer.OrdinalIgnoreCase;
+            if (comparer.Equals(command, "Edit.SurroundWith"))
+            {
+                // Need to keep the selection here so the surround with command knows the selection
+                // to surround.
+                return true;
+            }
+
+            return base.ShouldKeepSelectionAfterHostCommand(command, argument);
         }
 
         #region IVsSelectionEvents

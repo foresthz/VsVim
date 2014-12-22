@@ -205,7 +205,7 @@ type TagBlockParser (snapshot : ITextSnapshot) =
         if x.TestPositionChar position '<' && x.TestPositionChar (position + 1) '/' then
             let textStartPosition = position + 2
             let mutable position = textStartPosition
-            while x.TestPosition position CharUtil.IsLetter do
+            while x.TestPosition position CharUtil.IsLetterOrDigit do
                 position <- position + 1
 
             let length = position - textStartPosition
@@ -657,6 +657,7 @@ type MatchingTokenUtil() =
 
                         index <- length
                     else
+                        commentStart <- None
                         index <- index + 2
                 else
                     index <- index + 1
@@ -871,15 +872,16 @@ type internal MotionUtil
             | None ->
                 VisualMotionResult.FailedNoMotionResult
             | Some motionResult ->  
-                // Now migrate the SnapshotSpan down to the EditBuffer.  If we cannot map this span into
-                // the EditBuffer then we must fail. 
+                // Now migrate the SnapshotSpan values down to the edit buffer.  If this mapping can't 
+                // be done then the motion fails.
                 let span = BufferGraphUtil.MapSpanDownToSingle _bufferGraph motionResult.Span x.CurrentSnapshot
-                match span with
-                | None ->
+                let originalSpan = BufferGraphUtil.MapSpanDownToSingle _bufferGraph motionResult.OriginalSpan x.CurrentSnapshot
+                match span, originalSpan with
+                | Some span, Some originalSpan ->
+                    { motionResult with Span = span; OriginalSpan = span } |> VisualMotionResult.Succeeded
+                | _ ->
                     _statusUtil.OnError Resources.Internal_ErrorMappingBackToEdit
                     VisualMotionResult.FailedNoMapToEditSnapshot
-                | Some span ->
-                    { motionResult with Span = span } |> VisualMotionResult.Succeeded
 
     /// Run the motion function against the Visual Snapshot
     member x.MotionWithVisualSnapshot (action : SnapshotData -> MotionResult) = 
@@ -1088,110 +1090,107 @@ type internal MotionUtil
         | _ -> None
 
     member x.GetQuotedStringData quoteChar = 
-        let caretPoint,caretLine = TextViewUtil.GetCaretPointAndLine _textView
 
-        // Is the specified point a valid quote character.  This takes into account escape
-        // characters which appear before the point
-        let isQuotePoint point = 
-            let pointChar = SnapshotPointUtil.GetChar point
-            if pointChar = quoteChar then
-                match SnapshotPointUtil.TrySubtractOne point with
-                | None -> true 
-                | Some beforePoint -> 
-                    let beforeChar = SnapshotPointUtil.GetChar beforePoint
-                    not (StringUtil.containsChar _localSettings.QuoteEscape beforeChar)
-            else
-                false
+        // All of the points which represent a valid quoteChar value on the line.  This
+        // will take into account escaped characters
+        let quotePoints = 
+            let isEscapeChar c = 
+                StringUtil.containsChar _localSettings.QuoteEscape c 
 
-        // Get the next quote on the line from the specified point
-        let getNextQuote point = 
-            point
-            |> SnapshotPointUtil.GetPointsOnLineForward
-            |> Seq.skip 1
-            |> Seq.tryFind isQuotePoint
-
-        // Get the previous quote on the line from the specified point
-        let getPreviousQuote point = 
-            point
-            |> SnapshotPointUtil.GetPointsOnLineBackward
-            |> Seq.skip 1
-            |> Seq.tryFind isQuotePoint
-
-        // Calculate the leading whitespace span.  It includes the white space just
-        // before the leading quote.  The quote is not included in the span
-        let getLeadingWhiteSpace point = 
-            let getPreviousPoint point = SnapshotPointUtil.TryGetPreviousPointOnLine point 1
-
-            let rec inner current =
-                match getPreviousPoint current with
-                | None -> SnapshotSpanUtil.Create current point
-                | Some previousPoint ->
-                    if SnapshotPointUtil.IsWhiteSpace previousPoint then
-                        inner previousPoint 
-                    else
-                        SnapshotSpanUtil.Create current point 
-
-            inner point
-
-        // Calculate the trailing white space from the given point.  The specified point
-        // isn't included in the span
-        let getTrailingSpace point = 
-            let getNextPoint point = SnapshotPointUtil.TryGetNextPointOnLine point 1
-
-            let start = SnapshotPointUtil.AddOne point
-            let rec inner current = 
-                if SnapshotPointUtil.IsWhiteSpace current then
-                    match SnapshotPointUtil.TryAddOne current with
-                    | None -> SnapshotSpanUtil.Create start current
-                    | Some nextPoint -> inner nextPoint
+            let list = List<SnapshotPoint>()
+            let endPosition = x.CaretLine.End.Position
+            let mutable currentPosition = x.CaretLine.Start.Position
+            while currentPosition < endPosition do
+                let currentPoint = SnapshotPoint(x.CurrentSnapshot, currentPosition)
+                let currentChar = currentPoint.GetChar()
+                if isEscapeChar currentChar then
+                    currentPosition <- currentPosition + 2
+                elif currentChar = quoteChar then
+                    list.Add(SnapshotPoint(x.CurrentSnapshot, currentPosition))
+                    currentPosition <- currentPosition + 1
                 else
-                    SnapshotSpanUtil.Create start current
+                    currentPosition <- currentPosition + 1
 
-            inner start
+            list
 
-        // Find the quoted data structure from the first quote 
-        let getData leadingQuote = 
-            match getNextQuote leadingQuote with
-            | None -> None
-            | Some trailingQuote ->
+        // When building up the pairs of quotes on a line it's important to understand that Vim 
+        // doesn't care about strings in the same way as a programming language.  Consider
+        //
+        //  let x = 'first'second'
+        //
+        // A language may say that this is invalid code because it doesn't have a matched pair of
+        // strings.  Vim just things there are 2 strings here.  The middle quote exists for both
+        // strings
+        let quoteSpans = 
+            let list = List<SnapshotSpan>()
+            let mutable index = 1
+            while index < quotePoints.Count do
+                let span = SnapshotSpan(quotePoints.[index - 1], quotePoints.[index].Add(1))
+                list.Add(span)
+                index <- index + 1
+            list
 
-                let span = 
-                    let start = SnapshotPointUtil.AddOne leadingQuote
-                    SnapshotSpanUtil.Create start trailingQuote
+        let getStringData (stringSpan : SnapshotSpan) = 
+            let isWhiteSpace (position : int) = 
+                let c = x.CurrentSnapshot.[position]
+                CharUtil.IsWhiteSpace c
 
-                let leadingSpan = getLeadingWhiteSpace leadingQuote 
-                let trailingSpan = getTrailingSpace trailingQuote
+            let leadingSpace = 
+                let mutable current = stringSpan.Start.Position
+                let minimum = x.CaretLine.Start.Position
+                while current > minimum && isWhiteSpace (current - 1) do
+                    current <- current - 1
 
-                {
-                    LeadingWhiteSpace = leadingSpan
-                    LeadingQuote = leadingQuote
-                    Contents = span
-                    TrailingQuote = trailingQuote
-                    TrailingWhiteSpace = trailingSpan } |> Some
+                SnapshotSpan(SnapshotPoint(x.CurrentSnapshot, current), stringSpan.Start)
 
-        if isQuotePoint x.CaretPoint then
-            // When starting on a quote point we have to determine if this is a start or
-            // end quote of a string by examining the contents of the entire line 
-            let index = 
-                x.CaretLine
-                |> SnapshotLineUtil.GetPoints Path.Forward 
-                |> Seq.filter isQuotePoint
-                |> Seq.tryFindIndex (fun point -> point = x.CaretPoint)
-                |> Option.get
+            let trailingSpace = 
+                let mutable current = stringSpan.End.Position
+                let maximum = x.CaretLine.End.Position
+                while current < maximum && isWhiteSpace current do
+                    current <- current + 1
 
-            let index = index + 1 
-            if index % 2 = 0 then 
-                // It's an end quote.  Find the start quote and use that 
-                getPreviousQuote x.CaretPoint |> Option.get |> getData
+                SnapshotSpan(stringSpan.End, SnapshotPoint(x.CurrentSnapshot, current))
+
+            let trailingQuote = SnapshotSpanUtil.GetLastIncludedPoint stringSpan |> Option.get
+
+            let content = 
+                let start = stringSpan.Start.Add(1)
+                SnapshotSpan(start, trailingQuote)
+
+            {
+                LeadingWhiteSpace = leadingSpace
+                LeadingQuote = stringSpan.Start
+                Contents = content
+                TrailingQuote = trailingQuote
+                TrailingWhiteSpace = trailingSpace } |> Some
+
+        // If the caret is before the first quote string on the line it is moved forward to that
+        // quote
+        let position = 
+            let position = x.CaretPoint.Position
+            if quoteSpans.Count > 0 && position < quoteSpans.[0].Start.Position then
+                quoteSpans.[0].Start.Position
             else
-                getData x.CaretPoint
-        else
-            match getPreviousQuote x.CaretPoint with
-            | Some point -> getData point
-            | None -> 
-                match getNextQuote x.CaretPoint with
-                | Some point -> getData point
-                | None -> None
+                position
+
+        // Now try and find the best possible string.  In general this is pretty simple, just grab
+        // the string which contains the position.  The tricky case is when the position falls directly
+        // on a quote.  In that case we have to determine if it is the start or end quote (just check 
+        // for an even count to make that determination)
+        let mutable data : QuotedStringData option = None
+        let mutable index = 0 
+        while index < quoteSpans.Count && Option.isNone data do
+            let span = quoteSpans.[index]
+            if span.End.Position - 1 = position then
+                if index % 2 = 0 then
+                    data <- getStringData span
+            elif span.Contains(position) then
+                data <- getStringData span
+
+            index <- index + 1
+
+        data
+
 
     member x.Mark localMark = 
         match _vimTextBuffer.GetLocalMark localMark with
@@ -1322,10 +1321,13 @@ type internal MotionUtil
                 if isWhiteSpace span.End then
                     let endPoint = 
                         span.End
-                        |> SnapshotPointUtil.GetPointsIncludingLineBreak Path.Forward 
+                        |> SnapshotPointUtil.GetPoints Path.Forward 
                         |> Seq.skipWhile isWhiteSpace
-                        |> SeqUtil.headOrDefault (SnapshotUtil.GetEndPoint x.CurrentSnapshot)
-                    SnapshotSpan(span.Start, endPoint) |> Some
+                        |> SeqUtil.headOrDefault (SnapshotUtil.GetEndPoint x.CurrentSnapshot) 
+
+                    let line = SnapshotUtil.GetLineOrFirst span.Snapshot (endPoint.GetContainingLine().LineNumber - 1)
+                    
+                    SnapshotSpan(span.Start, line.End) |> Some
                 else
                     None
 
@@ -1821,6 +1823,7 @@ type internal MotionUtil
 
             span |> Option.map (fun s -> SnapshotSpan(point.Snapshot, s))
 
+
     /// An inner block motion is just the all block motion with the start and 
     /// end character removed 
     member x.InnerBlock contextPoint blockKind count =
@@ -1829,7 +1832,7 @@ type internal MotionUtil
         else
             match x.GetBlock blockKind contextPoint with
             | None -> None
-            | Some span ->
+            | Some span when span.Snapshot.LineCount = 1 ->
                 if span.Length < 3 then
                     None
                 else
@@ -1838,6 +1841,23 @@ type internal MotionUtil
                     let span = SnapshotSpan(startPoint, endPoint)
                     MotionResult.Create span true MotionKind.CharacterWiseInclusive |> Some
 
+            | Some span ->
+                let startPoint = 
+                    if SnapshotPointUtil.IsLastPointOnLine span.Start = false then
+                        span.Start.Add 1
+                    else
+                        span.Start.GetContainingLine().EndIncludingLineBreak
+
+                let endPoint =
+                    if SnapshotLineUtil.GetFirstNonBlank(span.End.GetContainingLine()) <> Some ( span.End.Subtract 1) then
+                        span.End.Subtract 1
+                    else
+                        let line = SnapshotUtil.GetLineOrFirst span.Snapshot (span.End.GetContainingLine().LineNumber - 1)
+                        line.End
+
+                let span = SnapshotSpanUtil.Create startPoint endPoint
+                MotionResult.Create span true MotionKind.CharacterWiseInclusive |> Some
+                
     /// Implement the 'iw' motion.  Unlike the 'aw' motion it is not limited to a specific line
     /// and can exceed it
     ///
@@ -2393,9 +2413,8 @@ type internal MotionUtil
 
         let motionResult = 
             match searchResult with
-            | SearchResult.NotFound _ ->
-                // Nothing to return here. 
-                None
+            | SearchResult.Error _ -> None
+            | SearchResult.NotFound _ -> None
             | SearchResult.Found (_, span, _, _) ->
                 // Create the MotionResult for the provided MotionArgument and the 
                 // start and end points of the search.  Need to be careful because
@@ -2500,7 +2519,8 @@ type internal MotionUtil
                 isWholeWord && isWord
 
             let pattern = if isWholeWord then PatternUtil.CreateWholeWord word else word
-            let searchData = SearchData(pattern, path, _globalSettings.WrapScan)
+            let searchKind = SearchKind.OfPathAndWrap path _globalSettings.WrapScan
+            let searchData = SearchData(pattern, SearchOffsetData.None, searchKind, SearchOptions.ConsiderIgnoreCase)
 
             // Make sure to update the LastSearchData here.  It needs to be done 
             // whether or not the search actually succeeds

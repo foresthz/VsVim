@@ -21,6 +21,8 @@ namespace Vim.UnitTest.Mock
         public bool IsAutoCommandEnabled { get; set; }
         public DefaultSettings DefaultSettings { get; set; }
         public int BeepCount { get; set; }
+        public bool ClosedOtherWindows { get; private set; }
+        public bool ClosedOtherTabs { get; private set; }
         public int GoToDefinitionCount { get; set; }
         public bool GoToFileReturn { get; set; }
         public bool GoToDefinitionReturn { get; set; }
@@ -38,7 +40,7 @@ namespace Vim.UnitTest.Mock
         public Func<ITextView> CreateHiddenTextViewFunc { get; set; }
         public Func<ITextBuffer, bool> IsDirtyFunc { get; set; }
         public Func<string, string, IVimData, string> RunCommandFunc { get; set; }
-        public Action<ITextView, string, string> RunVisualStudioCommandFunc { get; set; }
+        public Action<ITextView, string, string> RunHostCommandFunc { get; set; }
         public Action<QuickFix, int, bool> RunQuickFixFunc { get; set; }
         public Func<string, string, bool> RunSaveTextAs { get; set; }
         public ITextBuffer LastSaved { get; set; }
@@ -78,6 +80,8 @@ namespace Vim.UnitTest.Mock
             NavigateToReturn = false;
             Buffers = FSharpList<IVimBuffer>.Empty;
             BeepCount = 0;
+            ClosedOtherWindows = false;
+            ClosedOtherTabs = false;
             GoToDefinitionCount = 0;
             IsTextViewVisible = null;
             _isVisibleChanged = null;
@@ -86,7 +90,7 @@ namespace Vim.UnitTest.Mock
             GoToGlobalDeclarationFunc = delegate { throw new NotImplementedException(); };
             CreateHiddenTextViewFunc = delegate { throw new NotImplementedException(); };
             RunCommandFunc = delegate { throw new NotImplementedException(); };
-            RunVisualStudioCommandFunc = delegate { throw new NotImplementedException(); };
+            RunHostCommandFunc = delegate { throw new NotImplementedException(); };
             RunQuickFixFunc = delegate { throw new NotImplementedException(); };
             RunSaveTextAs = delegate { throw new NotImplementedException(); };
             ReloadFunc = delegate { return true; };
@@ -131,6 +135,16 @@ namespace Vim.UnitTest.Mock
         {
             LastClosed = textView;
             textView.Close();
+        }
+
+        void IVimHost.CloseAllOtherWindows(ITextView textView)
+        {
+            ClosedOtherWindows = true;
+        }
+
+        void IVimHost.CloseAllOtherTabs(ITextView textView)
+        {
+            ClosedOtherTabs = true;
         }
 
         ITextView IVimHost.CreateHiddenTextView()
@@ -224,9 +238,9 @@ namespace Vim.UnitTest.Mock
             return RunCommandFunc(command, arguments, vimData);
         }
 
-        void IVimHost.RunVisualStudioCommand(ITextView textView, string command, string argument)
+        void IVimHost.RunHostCommand(ITextView textView, string command, string argument)
         {
-            RunVisualStudioCommandFunc(textView, command, argument);
+            RunHostCommandFunc(textView, command, argument);
         }
 
         void IVimHost.SplitViewVertically(ITextView value)
@@ -340,6 +354,11 @@ namespace Vim.UnitTest.Mock
         int IVimHost.TabCount
         {
             get { return TabCount; }
+        }
+
+        bool IVimHost.ShouldKeepSelectionAfterHostCommand(string command, string argument)
+        {
+            return false;
         }
     }
 }

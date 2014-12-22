@@ -88,6 +88,10 @@ namespace Vim.UI.Wpf
             textView.Close();
         }
 
+        public abstract void CloseAllOtherTabs(ITextView textView);
+
+        public abstract void CloseAllOtherWindows(ITextView textView);
+
         /// <summary>
         /// Create a hidden ITextView.  It will have no roles in order to keep it out of 
         /// most plugins
@@ -263,7 +267,7 @@ namespace Vim.UI.Wpf
             }
         }
 
-        public abstract void RunVisualStudioCommand(ITextView textView, string command, string argument);
+        public abstract void RunHostCommand(ITextView textView, string command, string argument);
 
         public virtual bool Save(ITextBuffer textBuffer)
         {
@@ -297,6 +301,11 @@ namespace Vim.UI.Wpf
         public virtual bool ShouldIncludeRcFile(VimRcPath vimRcPath)
         {
             return vimRcPath.VimRcKind == VimRcKind.VsVimRc;
+        }
+
+        public virtual bool ShouldKeepSelectionAfterHostCommand(string command, string argument)
+        {
+            return false;
         }
 
         public virtual bool SaveTextAs(string text, string filePath)
@@ -614,9 +623,9 @@ namespace Vim.UI.Wpf
             return RunCommand(command, arguments, vimData);
         }
 
-        void IVimHost.RunVisualStudioCommand(ITextView textView, string command, string argument)
+        void IVimHost.RunHostCommand(ITextView textView, string command, string argument)
         {
-            RunVisualStudioCommand(textView, command, argument);
+            RunHostCommand(textView, command, argument);
         }
 
         bool IVimHost.Save(ITextBuffer value)
@@ -627,6 +636,11 @@ namespace Vim.UI.Wpf
         bool IVimHost.SaveTextAs(string text, string filePath)
         {
             return SaveTextAs(text, filePath);
+        }
+
+        bool IVimHost.ShouldKeepSelectionAfterHostCommand(string command, string argument)
+        {
+            return ShouldKeepSelectionAfterHostCommand(command, argument);
         }
 
         bool IVimHost.ShouldCreateVimBuffer(ITextView textView)
@@ -667,6 +681,16 @@ namespace Vim.UI.Wpf
         void IVimHost.VimCreated(IVim vim)
         {
             VimCreated(vim);
+        }
+
+        void IVimHost.CloseAllOtherTabs(ITextView textView)
+        {
+            CloseAllOtherTabs(textView);
+        }
+
+        void IVimHost.CloseAllOtherWindows(ITextView textView)
+        {
+            CloseAllOtherWindows(textView);
         }
 
         void IVimHost.VimRcLoaded(VimRcState vimRcState, IVimLocalSettings localSettings, IVimWindowSettings windowSettings)

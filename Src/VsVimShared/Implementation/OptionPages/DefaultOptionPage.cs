@@ -173,6 +173,8 @@ namespace Vim.VisualStudio.Implementation.OptionPages
         private static readonly ColorKey HighlightIncrementalSearchColorKey = ColorKey.Background(VimConstants.HighlightIncrementalSearchTagName);
         private static readonly ColorKey BlockCaretColorKey = ColorKey.Foreground(VimWpfConstants.BlockCaretFormatDefinitionName);
         private static readonly ColorKey ControlCharacterColorKey = ColorKey.Foreground(VimWpfConstants.ControlCharactersFormatDefinitionName);
+        private static readonly ColorKey CommandMarginForegroundColorKey = ColorKey.Foreground(VimWpfConstants.CommandMarginFormatDefinitionName);
+        private static readonly ColorKey CommandMarginBackgroundColorKey = ColorKey.Background(VimWpfConstants.CommandMarginFormatDefinitionName);
 
         private static readonly ReadOnlyCollection<ColorKey> ColorKeyList;
 
@@ -184,6 +186,8 @@ namespace Vim.VisualStudio.Implementation.OptionPages
                 HighlightIncrementalSearchColorKey,
                 BlockCaretColorKey,
                 ControlCharacterColorKey,
+                CommandMarginForegroundColorKey,
+                CommandMarginBackgroundColorKey,
             });
         }
 
@@ -193,6 +197,11 @@ namespace Vim.VisualStudio.Implementation.OptionPages
         [Description("Default settings to use when no vimrc file is found")]
         [Category(CategoryGeneral)]
         public DefaultSettings DefaultSettings { get; set; }
+
+        [DisplayName("Use Editor Command Margin")]
+        [Description("Use editor command margin for mode line instead of the status bar")]
+        [Category(CategoryGeneral)]
+        public bool UseEditorCommandMargin { get; set; }
 
         [DisplayName("Display Control Characters")]
         [Description("Whether or not control characters will display as they do in gVim.  For example should (char)29 display as an invisible character or ^]")]
@@ -262,6 +271,20 @@ namespace Vim.VisualStudio.Implementation.OptionPages
             get { return GetColor(ControlCharacterColorKey); }
             set { SetColor(ControlCharacterColorKey, value); }
         }
+        [DisplayName("Command Margin Foreground Color")]
+        [Category(CategoryColors)]
+        public Color CommandMarginForegroundColor
+        {
+            get { return GetColor(CommandMarginForegroundColorKey); }
+            set { SetColor(CommandMarginForegroundColorKey, value); }
+        }
+        [DisplayName("Command Margin Background Color")]
+        [Category(CategoryColors)]
+        public Color CommandMarginBackgroundColor
+        {
+            get { return GetColor(CommandMarginBackgroundColorKey); }
+            set { SetColor(CommandMarginBackgroundColorKey, value); }
+        }
 
         public DefaultOptionPage()
         {
@@ -283,6 +306,7 @@ namespace Vim.VisualStudio.Implementation.OptionPages
                 UseEditorDefaults = vimApplicationSettings.UseEditorDefaults;
                 UseEditorIndent = vimApplicationSettings.UseEditorIndent;
                 UseEditorTabAndBackspace = vimApplicationSettings.UseEditorTabAndBackspace;
+                UseEditorCommandMargin = vimApplicationSettings.UseEditorCommandMargin;
                 VimRcLoadSetting = vimApplicationSettings.VimRcLoadSetting;
                 DisplayControlCharacters = vimApplicationSettings.DisplayControlChars;
                 WordWrapDisplay = vimApplicationSettings.WordWrapDisplay;
@@ -303,6 +327,7 @@ namespace Vim.VisualStudio.Implementation.OptionPages
                 vimApplicationSettings.UseEditorDefaults = UseEditorDefaults;
                 vimApplicationSettings.UseEditorIndent = UseEditorIndent;
                 vimApplicationSettings.UseEditorTabAndBackspace = UseEditorTabAndBackspace;
+                vimApplicationSettings.UseEditorCommandMargin = UseEditorCommandMargin;
                 vimApplicationSettings.VimRcLoadSetting = VimRcLoadSetting;
                 vimApplicationSettings.DisplayControlChars = DisplayControlCharacters;
                 vimApplicationSettings.WordWrapDisplay = WordWrapDisplay;

@@ -435,6 +435,10 @@ type internal CharSpan
     interface System.IEquatable<CharSpan> with
         member x.Equals other = 0 = x.CompareTo other
 
+    static member FromBounds (str : string) (startIndex : int) (endIndex : int) charComparer =
+        let length = endIndex - startIndex
+        CharSpan(str, startIndex, length, charComparer)
+
 module internal CharUtil =
 
     let MinValue = System.Char.MinValue
@@ -451,6 +455,7 @@ module internal CharUtil =
     let IsNotBlank x = not (IsBlank x)
     let IsAlpha x = (x >= 'a' && x <= 'z') || (x >= 'A' && x <= 'Z')
     let IsLetter x = System.Char.IsLetter(x)
+    let IsWordChar x = IsLetter x || x = '_'
     let IsUpper x = System.Char.IsUpper(x)
     let IsUpperLetter x = IsUpper x && IsLetter x
     let IsLower x = System.Char.IsLower(x)
@@ -590,6 +595,31 @@ module internal CharUtil =
         | '9' -> Some 9
         | _ -> None
 
+/// The .Net mapping for the keys defined in :help key-notation
+module internal CharCodes =
+
+    /// <Nul> 
+    let Zero = char 0
+
+    /// <CR> / <Return> / <Enter>
+    let Enter = CharUtil.OfAsciiValue 13uy
+
+    /// <ESC>
+    let Escape = CharUtil.OfAsciiValue 27uy
+
+    /// <BS> 
+    let Backspace = '\b'
+
+    /// <FF>
+    let FormFeed = '\f'
+
+
+
+
+
+
+
+
 module internal StringBuilderExtensions =
 
     type StringBuilder with
@@ -609,12 +639,16 @@ module internal StringBuilderExtensions =
         member x.AppendNumber (number : int) =
             x.Append(number) |> ignore
 
-        member x.AppendSubstring (str : string) (start : int) (length : int) =
+        member x.AppendCharSpan (charSpan : CharSpan) =
             let mutable i = 0
-            while i < length do 
-                let c = str.[start + i]
+            while i < charSpan.Length do 
+                let c = charSpan.CharAt i
                 x.AppendChar c
                 i <- i + 1
+
+        member x.AppendSubstring (str : string) (start : int) (length : int) =
+            let charSpan = CharSpan(str, start, length, CharComparer.Exact)
+            x.AppendCharSpan charSpan
 
 module internal CollectionExtensions = 
 

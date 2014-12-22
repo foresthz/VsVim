@@ -4,7 +4,6 @@ using Microsoft.VisualStudio.Text;
 using Microsoft.VisualStudio.Text.Editor;
 using Microsoft.VisualStudio.Text.Operations;
 using Vim;
-using Vim.Extensions;
 using EditorUtils;
 using System;
 using System.Windows.Input;
@@ -68,6 +67,16 @@ namespace VimApp
         {
             _vim = vim;
             _vim.VimData.CurrentDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        }
+
+        public override void CloseAllOtherTabs(ITextView textView)
+        {
+            throw new NotImplementedException();
+        }
+
+        public override void CloseAllOtherWindows(ITextView textView)
+        {
+            throw new NotImplementedException();
         }
 
         public override void FormatLines(ITextView textView, SnapshotLineRange range)
@@ -219,9 +228,10 @@ namespace VimApp
             return false;
         }
 
-        public override void RunVisualStudioCommand(ITextView textView, string command, string argument)
+        public override void RunHostCommand(ITextView textView, string command, string argument)
         {
-
+            string msg = string.Format("Host Command Name='{0}' Argument='{1}'", command, argument);
+            _vim.ActiveStatusUtil.OnStatus(msg);
         }
 
         public override void SplitViewHorizontally(ITextView textView)

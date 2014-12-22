@@ -3,6 +3,7 @@ using System.Linq;
 using Microsoft.FSharp.Core;
 using Xunit;
 using Vim.Extensions;
+using Moq;
 
 namespace Vim.UnitTest
 {
@@ -71,21 +72,6 @@ namespace Vim.UnitTest
             Assert.Equal(toMatch, match.Value);
         }
 
-        private void VerifyReplace(string pattern, string input, string replace, string result)
-        {
-            VerifyReplace(VimRegexOptions.Default, pattern, input, replace, result);
-        }
-
-        private void VerifyReplace(VimRegexOptions options, string pattern, string input, string replace, string result)
-        {
-            var regex = VimRegexFactory.Create(pattern, options);
-            Assert.True(regex.IsSome());
-
-            var noMagic = VimRegexOptions.NoMagic == (options & VimRegexOptions.NoMagic);
-            var replaceData = new ReplaceData(Environment.NewLine, !noMagic, 1);
-            Assert.Equal(result, regex.Value.ReplaceAll(input, replace, replaceData));
-        }
-
         public sealed class BracketTest : VimRegexTest
         {
             /// <summary>
@@ -123,6 +109,263 @@ namespace Vim.UnitTest
                 VerifyNotMatches(VimRegexOptions.Default, "[ab]", "[", "]");
                 VerifyMatches(VimRegexOptions.NoMagic, "[ab]", "[ab]");
                 VerifyMatches(VimRegexOptions.NoMagic, @"\[ab]", "a", "b", "ab");
+            }
+        }
+
+        public sealed class ReplaceTest : VimRegexTest
+        {
+            private readonly IRegisterMap _registerMap;
+            private readonly Mock<IClipboardDevice> _clipboardDevice;
+
+            public ReplaceTest()
+            {
+                _clipboardDevice = new Mock<IClipboardDevice>(MockBehavior.Loose);
+                Func<FSharpOption<string>> func = () => FSharpOption<string>.None;
+                _registerMap = new RegisterMap(
+                    new VimData(_globalSettings),
+                    _clipboardDevice.Object,
+                    func.ToFSharpFunc());
+            }
+
+            private void VerifyReplace(string pattern, string input, string replace, string result, VimRegexReplaceCount count = null)
+            {
+                count = count ?? VimRegexReplaceCount.All;
+                VerifyReplace(VimRegexOptions.Default, pattern, input, replace, result, count);
+            }
+
+            private void VerifyReplace(VimRegexOptions options, string pattern, string input, string replace, string result, VimRegexReplaceCount count = null)
+            {
+                count = count ?? VimRegexReplaceCount.All;
+                var regex = VimRegexFactory.Create(pattern, options);
+                Assert.True(regex.IsSome());
+
+                var noMagic = VimRegexOptions.NoMagic == (options & VimRegexOptions.NoMagic);
+                var replaceData = new VimRegexReplaceData(Environment.NewLine, !noMagic, count);
+                Assert.Equal(result, regex.Value.Replace(input, replace, replaceData, _registerMap));
+            }
+
+            /// <summary>
+            /// Simple no-magic replace
+            /// </summary>
+            [Fact]
+            public void Replace1()
+            {
+                VerifyReplace(@"foo", "foo bar", "bar", "bar bar");
+                VerifyReplace(@"foo", "foo bar baz", "bar", "bar bar baz");
+            }
+
+            [Fact]
+            public void Replace2()
+            {
+                VerifyReplace(@"a\|b", "cat", "o", "cot");
+            }
+
+            [Fact]
+            public void Replace3()
+            {
+                VerifyReplace(@"\<foo\>", "foo bar", "bar", "bar bar");
+                VerifyReplace(@"\<foo\>", "foobar", "bar", "foobar");
+                VerifyReplace(@"\<foo\>", "foo bar baz", "bar", "bar bar baz");
+            }
+
+            [Fact]
+            public void Replace4()
+            {
+                VerifyReplace(@"(ab)", "foo(ab)", "()", "foo()");
+                VerifyReplace(@"foo(ab)", "foo(ab)", "()", "()");
+                VerifyReplace(@"foo()", "foo(ab)", "()", "foo(ab)");
+            }
+
+            [Fact]
+            public void Replace5()
+            {
+                VerifyReplace(@"\(ab\)", "ab", "", "");
+                VerifyReplace(@"\(ab\)", "cab", "", "c");
+                VerifyReplace(@"\(ab\)", "c(ab)", "", "c()");
+            }
+
+            [Fact]
+            public void Replace6()
+            {
+                VerifyReplace(@"foo\(\.*\)", "foobar", @"\1", "bar");
+                VerifyReplace(@"jaz\(\.*\)", "jaz123", @"\1", "123");
+            }
+
+            [Fact]
+            public void Replace7()
+            {
+                VerifyReplace(@"\(\.*\)b\(\.*\)", "abc", @"\2", "ac");
+                VerifyReplace(@"\(\.*\)b\(\.*\)", "abc", @"\1\2", "ac");
+                VerifyReplace(@"\(\.*\)b\(\.*\)", "abc", @"\1blah\2", "ablahc");
+            }
+
+            /// <summary>
+            /// Escaped back slashes should appear as normal back slashes in the replacement string
+            /// </summary>
+            [Fact]
+            public void EscapedBackSlashes()
+            {
+                VerifyReplace("b", "abc", @"\\\\", @"a\\c");
+            }
+
+            /// <summary>
+            /// Don't treat an escaped backslash in front of a 'n' character as a new line. 
+            /// 
+            /// Issue #779
+            /// </summary>
+            [Fact]
+            public void EscapedBackSlashNotNewLine()
+            {
+                VerifyReplace("b", "abc", @"\\n\\", @"a\n\c");
+                VerifyReplace("$", "dog", @"\\n\\", @"dog\n\");
+            }
+
+            /// <summary>
+            /// When the '&' character is used in the replacement string it should replace with 
+            /// the entire matched pattern
+            /// </summary>
+            [Fact]
+            public void Ampersand()
+            {
+                VerifyReplace("a", "cat", @"o&", "coat");
+                VerifyReplace(@"a\+", "caat", @"o&", "coaat");
+            }
+
+            /// <summary>
+            /// When there is no magic then the ampersand is not special and should replace 
+            /// as normal
+            /// </summary>
+            [Fact]
+            public void Ampersand_NoMagic()
+            {
+                VerifyReplace(VimRegexOptions.NoMagic, "a", "cat", @"o&", "co&t");
+                VerifyReplace(VimRegexOptions.NoMagic, @"a\+", "caat", @"o&", "co&t");
+            }
+
+            /// <summary>
+            /// When escaped with magic it should behave simply as an ampersand
+            /// </summary>
+            [Fact]
+            public void EscapedAmpersand()
+            {
+                VerifyReplace("a", "cat", @"o\&", "co&t");
+                VerifyReplace(@"a\+", "caat", @"o\&", "co&t");
+            }
+
+            /// <summary>
+            /// The '\0' pattern is used to match the entire matched pattern.  It acts exactly 
+            /// as '&' does in the replacement string
+            /// </summary>
+            [Fact]
+            public void EscapedZero()
+            {
+                VerifyReplace("a", "cat", @"o\0", "coat");
+                VerifyReplace(@"a\+", "caat", @"o\0", "coaat");
+            }
+
+            /// <summary>
+            /// The '\t' replacement string should insert a tab
+            /// </summary>
+            [Fact]
+            public void Escaped_T()
+            {
+                VerifyReplace("a", "a", @"\t", "\t");
+                VerifyReplace("  ", "    ", @"\t", "\t\t");
+            }
+
+            /// <summary>
+            /// The '\r' replacement should insert a carriage return
+            /// </summary>
+            [Fact]
+            public void Escaped_R()
+            {
+                VerifyReplace("a", "a", @"\r", Environment.NewLine);
+            }
+
+            [Fact]
+            public void Newline()
+            {
+                VerifyReplace(@"\n", "hello\nworld", " ", "hello world");
+                VerifyReplace(@"\n", "hello\r\nworld", " ", "hello world");
+                VerifyReplace(@"\n", "hello\rworld", " ", "hello world");
+            }
+
+            [Fact]
+            public void UpperCaseChar()
+            {
+                VerifyReplace("cat", "cat dog", @"\u&", "Cat dog");
+                VerifyReplace("cat", "cat dog", @"\ubat", "Bat dog");
+                VerifyReplace(@"\(cat\)", "cat dog", @"\u\1", "Cat dog");
+                VerifyReplace("cat", "cat dog", @"\u\0", "Cat dog");
+            }
+
+            [Fact]
+            public void UpperCaseUntil()
+            {
+                VerifyReplace("cat", "cat dog", @"\U&", "CAT dog");
+                VerifyReplace("cat", "cat dog", @"\U&&", "CATCAT dog");
+                VerifyReplace("cat", "cat dog", @"\U&\e&", "CATcat dog");
+            }
+
+            [Fact]
+            public void LowerCaseChar()
+            {
+                VerifyReplace("CAT", "CAT dog", @"\l&", "cAT dog");
+                VerifyReplace("CAT", "CAT dog", @"\l&s", "cATs dog");
+                VerifyReplace("CAT", "CAT dog", @"\l\0s", "cATs dog");
+            }
+
+            [Fact]
+            public void LowerCaseUntil()
+            {
+                VerifyReplace("CAT", "CAT dog", @"\L&", "cat dog");
+                VerifyReplace("CAT", "CAT dog", @"\L&s", "cats dog");
+                VerifyReplace("CAT", "CAT dog", @"\L\0s", "cats dog");
+            }
+
+            [Fact]
+            public void BadGroupSpecifier()
+            {
+                VerifyReplace("fish", "fish tree", @"let\3", "let tree");
+            }
+
+            [Fact]
+            public void BadPattern()
+            {
+                VerifyReplace("fishy", "fish tree", @"let\3", "fish tree");
+            }
+
+            [Fact]
+            public void InsertNewLine()
+            {
+                VerifyReplace(@"o", "dog", @"\r", "d" + Environment.NewLine + "g");
+                VerifyReplace(@"o", "dog", @"\" + CharCodes.Enter, "d" + Environment.NewLine + "g");
+                VerifyReplace(@"o", "dog", @"" + CharCodes.Enter, "d" + Environment.NewLine + "g");
+            }
+
+            /// <summary>
+            /// The \n replace actually inserts the null character and not a new line 
+            /// into the file
+            /// </summary>
+            [Fact]
+            public void InsertNullCharacter()
+            {
+                VerifyReplace(@"o", "dog", @"\n", "d" + (char)0 + "g");
+            }
+
+            [Fact]
+            public void InsertRegisterValue()
+            {
+                _registerMap.SetRegisterValue('c', "fish");
+                VerifyReplace("o", "dog", @"\=@c", "dfishg");
+                VerifyReplace("o", "doog", @"\=@c", "dfishfishg");
+            }
+
+            [Fact]
+            public void NonGreedyRegexReplace()
+            {
+                VerifyReplace(@"Task<\(.\{-}\)>", "public Task<string> M()", @"\1", "public string M()");
+                VerifyReplace(@"a\{-1,2}", "aaaaa", "b", "baaaa", VimRegexReplaceCount.One);
             }
         }
 
@@ -674,144 +917,6 @@ namespace Vim.UnitTest
                 VerifyMatchIs(@"\vab|c", "bacod", "c");
             }
 
-            /// <summary>
-            /// Simple no-magic replace
-            /// </summary>
-            [Fact]
-            public void Replace1()
-            {
-                VerifyReplace(@"foo", "foo bar", "bar", "bar bar");
-                VerifyReplace(@"foo", "foo bar baz", "bar", "bar bar baz");
-            }
-
-            [Fact]
-            public void Replace2()
-            {
-                VerifyReplace(@"a\|b", "cat", "o", "cot");
-            }
-
-            [Fact]
-            public void Replace3()
-            {
-                VerifyReplace(@"\<foo\>", "foo bar", "bar", "bar bar");
-                VerifyReplace(@"\<foo\>", "foobar", "bar", "foobar");
-                VerifyReplace(@"\<foo\>", "foo bar baz", "bar", "bar bar baz");
-            }
-
-            [Fact]
-            public void Replace4()
-            {
-                VerifyReplace(@"(ab)", "foo(ab)", "()", "foo()");
-                VerifyReplace(@"foo(ab)", "foo(ab)", "()", "()");
-                VerifyReplace(@"foo()", "foo(ab)", "()", "foo(ab)");
-            }
-
-            [Fact]
-            public void Replace5()
-            {
-                VerifyReplace(@"\(ab\)", "ab", "", "");
-                VerifyReplace(@"\(ab\)", "cab", "", "c");
-                VerifyReplace(@"\(ab\)", "c(ab)", "", "c()");
-            }
-
-            [Fact]
-            public void Replace6()
-            {
-                VerifyReplace(@"foo\(\.*\)", "foobar", @"\1", "bar");
-                VerifyReplace(@"jaz\(\.*\)", "jaz123", @"\1", "123");
-            }
-
-            [Fact]
-            public void Replace7()
-            {
-                VerifyReplace(@"\(\.*\)b\(\.*\)", "abc", @"\2", "ac");
-                VerifyReplace(@"\(\.*\)b\(\.*\)", "abc", @"\1\2", "ac");
-                VerifyReplace(@"\(\.*\)b\(\.*\)", "abc", @"\1blah\2", "ablahc");
-            }
-
-            /// <summary>
-            /// Escaped back slashes should appear as normal back slashes in the replacement string
-            /// </summary>
-            [Fact]
-            public void Replace_EscapedBackSlashes()
-            {
-                VerifyReplace("b", "abc", @"\\\\", @"a\\c");
-            }
-
-            /// <summary>
-            /// Don't treat an escaped backslash in front of a 'n' character as a new line. 
-            /// 
-            /// Issue #779
-            /// </summary>
-            [Fact]
-            public void Replace_EscapedBackSlashNotNewLine()
-            {
-                VerifyReplace("b", "abc", @"\\n\\", @"a\n\c");
-                VerifyReplace("$", "dog", @"\\n\\", @"dog\n\");
-            }
-
-            /// <summary>
-            /// When the '&' character is used in the replacement string it should replace with 
-            /// the entire matched pattern
-            /// </summary>
-            [Fact]
-            public void Replace_Ampersand()
-            {
-                VerifyReplace("a", "cat", @"o&", "coat");
-                VerifyReplace(@"a\+", "caat", @"o&", "coaat");
-            }
-
-            /// <summary>
-            /// When there is no magic then the ampersand is not special and should replace 
-            /// as normal
-            /// </summary>
-            [Fact]
-            public void Replace_Ampersand_NoMagic()
-            {
-                VerifyReplace(VimRegexOptions.NoMagic, "a", "cat", @"o&", "co&t");
-                VerifyReplace(VimRegexOptions.NoMagic, @"a\+", "caat", @"o&", "co&t");
-            }
-
-            /// <summary>
-            /// When escaped with magic it should behave simply as an ampersand
-            /// </summary>
-            [Fact]
-            public void Replace_EscapedAmpersand()
-            {
-                VerifyReplace("a", "cat", @"o\&", "co&t");
-                VerifyReplace(@"a\+", "caat", @"o\&", "co&t");
-            }
-
-            /// <summary>
-            /// The '\0' pattern is used to match the entire matched pattern.  It acts exactly 
-            /// as '&' does in the replacement string
-            /// </summary>
-            [Fact]
-            public void Replace_EscapedZero()
-            {
-                VerifyReplace("a", "cat", @"o\0", "coat");
-                VerifyReplace(@"a\+", "caat", @"o\0", "coaat");
-            }
-
-            /// <summary>
-            /// The '\t' replacement string should insert a tab
-            /// </summary>
-            [Fact]
-            public void Replace_Escaped_T()
-            {
-                VerifyReplace("a", "a", @"\t", "\t");
-                VerifyReplace("  ", "    ", @"\t", "\t\t");
-            }
-
-            /// <summary>
-            /// The '\r' replacement should insert a carriage return
-            /// </summary>
-            [Fact]
-            public void Replace_Escaped_R()
-            {
-                VerifyReplace("a", "a", @"\r", Environment.NewLine);
-            }
-
             [Fact]
             public void CharacterSequence1()
             {
@@ -1143,19 +1248,66 @@ namespace Vim.UnitTest
             }
 
             [Fact]
-            public void NewLine_Replace()
-            {
-                VerifyReplace(@"\n", "hello\nworld", " ", "hello world");
-                VerifyReplace(@"\n", "hello\r\nworld", " ", "hello world");
-                VerifyReplace(@"\n", "hello\rworld", " ", "hello world");
-            }
-
-            [Fact]
             public void Newline_DollarSignMatchesEndOfLine()
             {
                 VerifyMatches(@"foo$", "foo\r\nbar");
                 VerifyMatches(@"foo$", "foo\nbar");
                 VerifyMatches(@"foo$", "foo");
+            }
+        }
+
+        public sealed class SearchTest : VimRegexTest
+        {
+            [Fact]
+            public void NormalDigits()
+            {
+                VerifyMatches(@"\d", "1");
+                VerifyMatches(@"\d\+", "100");
+                VerifyMatches(VimRegexOptions.NoMagic, @"\d", "1");
+                VerifyNotMatches(@"\D", "1");
+                VerifyMatches(@"\D", "a", "!@");
+            }
+
+            [Fact]
+            public void HexDigits()
+            {
+                VerifyMatches(@"\x", "1", "a", "f", "A", "D");
+                VerifyMatches(@"\x\+", "1a");
+                VerifyMatches(VimRegexOptions.NoMagic, @"\x", "1");
+                VerifyNotMatches(@"\X", "a", "1");
+                VerifyMatches(@"\X", "g", "!");
+            }
+
+            [Fact]
+            public void OctalDigits()
+            {
+                VerifyMatches(@"\o", "1");
+                VerifyMatches(@"\o\+", "100");
+                VerifyMatches(VimRegexOptions.NoMagic, @"\o", "1");
+                VerifyNotMatches(@"\O", "1");
+                VerifyMatches(@"\O", "a", "!@", "8");
+            }
+
+            [Fact]
+            public void NamedCollection()
+            {
+                VerifyMatches(@"[[:alpha:]]", "a", "d");
+                VerifyNotMatches(@"[[:alpha:]]", "1", "@");
+                VerifyMatches(@"[[:alpha:]]\+", "cat", "dog");
+            }
+
+            [Fact]
+            public void Identifier()
+            {
+                VerifyMatches(@"\i", "a", "b", "C", "0");
+                VerifyMatches(@"\I", "a", "b", "C");
+                VerifyNotMatches(@"\I", "0");
+            }
+
+            [Fact]
+            public void Issue1248()
+            {
+                VerifyMatches(@"Task<\(.\{-}\)>", "public void Task<string>");
             }
         }
     }

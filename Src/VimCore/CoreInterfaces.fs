@@ -85,18 +85,6 @@ type ChangeCharacterKind =
     /// Rot13 encode the letters
     | Rot13
 
-/// Map containing the various VIM registers
-type IRegisterMap = 
-
-    /// Gets all of the available register name values
-    abstract RegisterNames : seq<RegisterName>
-
-    /// Get the register with the specified name
-    abstract GetRegister : RegisterName -> Register
-
-    /// Update the register with the specified value
-    abstract SetRegisterValue : Register -> RegisterOperation -> RegisterValue -> unit
-
 type IStatusUtil =
 
     /// Raised when there is a special status message that needs to be reported
@@ -653,6 +641,10 @@ type SearchResult =
     /// but wasn't found do to the lack of a wrap in the SearchData value
     | NotFound of SearchData * bool
 
+    /// There was an error converting the pattern to a searchable value.  The string value is the
+    /// error message
+    | Error of SearchData * string
+
     with
 
     /// Returns the SearchData which was searched for
@@ -660,6 +652,7 @@ type SearchResult =
         match x with 
         | SearchResult.Found (searchData, _, _, _) -> searchData
         | SearchResult.NotFound (searchData, _) -> searchData
+        | SearchResult.Error (searchData, _) -> searchData
 
 type SearchResultEventArgs(_searchResult : SearchResult) = 
     inherit System.EventArgs()
@@ -675,9 +668,6 @@ type ISearchService =
     /// Find the next occurrence of the pattern in the buffer starting at the 
     /// given SnapshotPoint
     abstract FindNext : searchPoint : SnapshotPoint -> searchData : SearchData -> navigator : ITextStructureNavigator -> SearchResult
-
-    /// Find the next Nth occurrence of the search data
-    abstract FindNextMultiple : searchPoint : SnapshotPoint -> searchData : SearchData -> navigator : ITextStructureNavigator -> count : int -> SearchResult
 
     /// Find the next 'count' occurrence of the specified pattern.  Note: The first occurrence won't
     /// match anything at the provided start point.  That will be adjusted appropriately
@@ -2157,11 +2147,14 @@ type VisualSelection =
 
     /// Create the initial Visual Selection information for the specified Kind started at 
     /// the specified point
-    static member CreateInitial visualKind caretPoint tabStop =
+    static member CreateInitial visualKind caretPoint tabStop selectionKind =
         match visualKind with
         | VisualKind.Character ->
             let characterSpan = 
-                let endPoint = SnapshotPointUtil.AddOneOrCurrent caretPoint
+                let endPoint = 
+                    match selectionKind with
+                    | SelectionKind.Inclusive -> SnapshotPointUtil.AddOneOrCurrent caretPoint
+                    | SelectionKind.Exclusive -> caretPoint
                 CharacterSpan(caretPoint, endPoint)
             VisualSelection.Character (characterSpan, Path.Forward)
         | VisualKind.Line ->
@@ -2241,6 +2234,13 @@ type CommandResult =
     /// An error was encountered and the command was unable to run.  If this is encountered
     /// during a macro run it will cause the macro to stop executing
     | Error
+
+[<RequireQualifiedAccess>]
+[<NoComparison>]
+[<NoEquality>]
+type VimResult<'T> =
+    | Result of 'T
+    | Error of string
 
 /// Information about the attributes of Command
 [<System.Flags>]
@@ -2385,6 +2385,9 @@ type NormalCommand =
     /// Close the IVimBuffer and don't bother to save
     | CloseBuffer
 
+    /// Close the window unless the buffer is dirty
+    | CloseWindow
+
     /// Close 'count' folds under the caret
     | CloseFoldUnderCaret
 
@@ -2527,6 +2530,9 @@ type NormalCommand =
     /// the indent of the current line
     | PutBeforeCaretWithIndent
 
+    /// Print out the current file information
+    | PrintFileInformation
+
     /// Start the recording of a macro to the specified Register
     | RecordMacroStart of char
 
@@ -2658,6 +2664,12 @@ type VisualCommand =
 
     /// Format the selected text
     | FormatLines
+
+    /// GoTo the file under the cursor in a new window
+    | GoToFileInSelectionInNewWindow
+
+    /// GoTo the file under the cursor in this window
+    | GoToFileInSelection
 
     /// Join the selected lines
     | JoinSelection of JoinKind
@@ -3260,6 +3272,18 @@ type ICommandRunner =
     /// True if waiting on more input
     abstract IsWaitingForMoreInput : bool
 
+    /// True if the current command has a register associated with it 
+    abstract HasRegisterName : bool 
+
+    /// True if the current command has a count associated with it 
+    abstract HasCount : bool
+
+    /// When HasRegister is true this has the associated RegisterName 
+    abstract RegisterName : RegisterName
+
+    /// When HasCount is true this has the associated count
+    abstract Count : int 
+
     /// Add a Command.  If there is already a Command with the same name an exception will
     /// be raised
     abstract Add : CommandBinding -> unit
@@ -3799,6 +3823,12 @@ type IVimHost =
     /// Close the provided view
     abstract Close : ITextView -> unit
 
+    /// Close all tabs but this one
+    abstract CloseAllOtherTabs : ITextView -> unit
+
+    /// Close all windows but this one within this tab
+    abstract CloseAllOtherWindows : ITextView -> unit
+
     /// Create a hidden ITextView instance.  This is primarily used to load the contents
     /// of the vimrc
     abstract CreateHiddenTextView : unit -> ITextView
@@ -3885,13 +3915,19 @@ type IVimHost =
     abstract RunCommand : file : string -> arguments : string -> vimHost : IVimData -> string
 
     /// Run the Visual studio command in the context of the given ITextView
-    abstract RunVisualStudioCommand : textView : ITextView -> commandName : string -> argument : string -> unit
+    abstract RunHostCommand : textView : ITextView -> commandName : string -> argument : string -> unit
 
     /// Save the provided ITextBuffer instance
     abstract Save : textBuffer : ITextBuffer -> bool 
 
     /// Save the current document as a new file with the specified name
     abstract SaveTextAs : text : string -> filePath : string -> bool 
+
+    /// Should the selection be kept after running the given host command?  In general 
+    /// VsVim will clear the selection after a host command because that is the vim
+    /// behavior.  Certain host commands exist to set selection though and clearing that
+    /// isn't desirable
+    abstract ShouldKeepSelectionAfterHostCommand : command : string -> argument : string -> bool 
 
     /// Called by Vim when it encounters a new ITextView and needs to know if it should 
     /// create an IVimBuffer for it
@@ -4061,6 +4097,10 @@ and IVim =
 
     /// Get the IVimTextBuffer associated with the given ITextBuffer
     abstract TryGetVimTextBuffer : textBuffer : ITextBuffer * [<Out>] vimTextBuffer : IVimTextBuffer byref -> bool
+
+    /// This implements a cached version of IVimHost::ShouldCreateVimBuffer.  Code should prefer 
+    /// this method wherever possible 
+    abstract ShouldCreateVimBuffer : textView : ITextView -> bool
 
     /// Get or create an IVimBuffer for the given ITextView.  The creation of the IVimBuffer will
     /// only occur if the host returns true from IVimHost::ShouldCreateVimBuffer.  

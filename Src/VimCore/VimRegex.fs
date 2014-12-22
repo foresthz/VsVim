@@ -1,37 +1,10 @@
 ﻿#light
 
 namespace Vim
+open System
 open System.Text
 open System.Text.RegularExpressions
 open StringBuilderExtensions
-
-[<System.Flags>]
-type VimRegexOptions = 
-    | Default = 0
-    | NotCompiled = 0x1
-    | IgnoreCase = 0x2
-    | SmartCase = 0x4
-    | NoMagic = 0x8
-
-[<RequireQualifiedAccess>]
-type CaseSpecifier =
-    | None
-    | IgnoreCase
-    | OrdinalCase 
-
-/// Data for a replace operation
-type ReplaceData = {
-
-    /// When the '\r' replace sequence is used what should the replace string be.  This
-    /// is usually contextual to the point in the IVimBuffer
-    NewLine : string
-
-    /// Whether or not magic should apply
-    Magic : bool
-
-    /// The 'count' times it should be replaced.  Not considered in a replace all
-    Count : int
-}
 
 module VimRegexUtils = 
 
@@ -78,54 +51,160 @@ module VimRegexUtils =
 
     let Escape c = c |> StringUtil.ofChar |> Regex.Escape 
 
-    let ConvertReplacementString (replacement : string) (replaceData : ReplaceData) = 
-        let builder = StringBuilder()
-        let appendChar c = builder.AppendChar c
-        let appendString str = builder.AppendString str
-        let rec inner index = 
+[<RequireQualifiedAccess>]
+[<NoComparison>]
+type VimReplaceCaseState = 
+    | None
+    | UpperChar
+    | UpperUntil
+    | LowerChar
+    | LowerUtil
 
-            // Process a character which follows an '\' in the string
-            let handleEscapeChar c = 
-                if CharUtil.IsDigit c then 
-                    appendChar '$'
-                    appendChar c
-                elif c = '&' && not replaceData.Magic then
-                    appendString "$0"
-                elif c = '\\' then
-                    appendChar '\\'
-                elif c = 'r' then
-                    appendString replaceData.NewLine
-                elif c = 't' then
-                    appendChar '\t'
-                else 
-                    Escape c |> appendString
-                inner (index + 2)
 
-            match StringUtil.charAtOption index replacement with
-            | None -> 
-                builder.ToString()
-            | Some '&' -> 
-                if replaceData.Magic then
-                    // This is a special character in the replacement string and should 
-                    // match the entire matched string
-                    appendString "$0"
+/// Type responsible for generating replace strings.
+[<Sealed>]
+type VimRegexReplaceUtil
+    (
+        _input : string,
+        _matchCollection : MatchCollection,
+        _registerMap : IRegisterMap
+    ) =
+
+    let mutable _replaceCount = 0
+    let mutable _replacement = ""
+    let mutable _index = 0
+    let mutable _caseState = VimReplaceCaseState.None
+    let mutable _builder = StringBuilder()
+    let mutable _replaceData = VimRegexReplaceData.Default
+
+    member private x.AppendReplaceChar c = 
+        match _caseState with
+        | VimReplaceCaseState.None -> 
+            _builder.AppendChar c
+        | VimReplaceCaseState.LowerChar -> 
+            _builder.AppendChar (CharUtil.ToLower c)
+            _caseState <- VimReplaceCaseState.None
+        | VimReplaceCaseState.LowerUtil -> 
+            _builder.AppendChar (CharUtil.ToLower c)
+        | VimReplaceCaseState.UpperChar ->
+            _builder.AppendChar (CharUtil.ToUpper c)
+            _caseState <- VimReplaceCaseState.None
+        | VimReplaceCaseState.UpperUntil ->
+            _builder.AppendChar (CharUtil.ToUpper c)
+    
+    member private x.AppendReplaceString str = 
+        str |> Seq.iter x.AppendReplaceChar
+
+    member private x.AppendGroup (m : Match) digit = 
+        Contract.Requires (digit <> 0)
+        if digit < m.Groups.Count then
+            let group = m.Groups.[digit]
+            x.AppendReplaceString group.Value
+
+    member private x.AppendRegister (c : char) = 
+        match RegisterName.OfChar c with
+        | None -> ()
+        | Some name ->
+            let register = _registerMap.GetRegister name
+            x.AppendReplaceString register.StringValue
+
+        _index <- _index + 2
+
+    /// Append the next element from the replace string.  This is typically a character but can 
+    /// be more if the character is an escape sequence.  
+    ///
+    /// This method is responsible for updating _index based on the value consumed
+    member private x.AppendNextElement (m : Match) =  
+        Contract.Requires (_index < _replacement.Length)
+
+        match _replacement.[_index] with
+        | '&' when _replaceData.Magic ->
+            x.AppendReplaceString m.Value
+            _index <- _index + 1
+        | '\\' when (_index + 1) < _replacement.Length ->
+            match _replacement.[_index + 1] with
+            | '\\' -> _builder.AppendChar '\\'
+            | 't' -> _builder.AppendChar '\t'
+            | 'n' -> _builder.AppendChar (char 0)
+            | '0' -> x.AppendReplaceString m.Value
+            | '&' -> 
+                if _replaceData.Magic then
+                    _builder.AppendChar '&'
                 else
-                    // In no magic this is simply a normal character
-                    appendChar '&'
-                inner (index + 1)
-            | Some '\\' -> 
-                match StringUtil.charAtOption (index + 1) replacement with 
-                | None -> 
-                    Escape '\\' |> appendString
-                    builder.ToString()
-                | Some c -> 
-                    handleEscapeChar c 
-            | Some c -> 
-                appendChar c
-                inner (index + 1)
+                    _builder.AppendChar '&'
+            | 'u' -> _caseState <- VimReplaceCaseState.UpperChar
+            | 'U' -> _caseState <- VimReplaceCaseState.UpperUntil
+            | 'l' -> _caseState <- VimReplaceCaseState.LowerChar
+            | 'L' -> _caseState <- VimReplaceCaseState.LowerUtil
+            | 'e' -> _caseState <- VimReplaceCaseState.None
+            | 'E' -> _caseState <- VimReplaceCaseState.None
+            | 'r' -> _builder.AppendString _replaceData.NewLine
+            | c -> 
+                if c = CharCodes.Enter then
+                    _builder.AppendString _replaceData.NewLine
+                elif c = '=' && _index + 3 < _replacement.Length && _replacement.[_index + 2] = '@' then
+                    x.AppendRegister _replacement.[_index + 3]
+                else
+                    match CharUtil.GetDigitValue c with 
+                    | Some d-> x.AppendGroup m d
+                    | None ->
+                        _builder.AppendChar '\\'
+                        _builder.AppendChar c
+            _index <- _index + 2
+        | c -> 
+            if c = CharCodes.Enter then
+                _builder.AppendString _replaceData.NewLine
+            else
+                x.AppendReplaceChar c
+            _index <- _index + 1
 
-        inner 0
+    member private x.AppendReplacementCore (m : Match) =
+        _caseState <- VimReplaceCaseState.None
+        _index <- 0
+        while _index < _replacement.Length do
+            x.AppendNextElement m
 
+    member private x.AppendReplacement (m : Match) =
+        match _replaceData.Count with
+        | VimRegexReplaceCount.All -> x.AppendReplacementCore m
+        | VimRegexReplaceCount.One when _replaceCount = 0 -> x.AppendReplacementCore m
+        | _ -> _builder.AppendString m.Value
+
+        _replaceCount <- _replaceCount + 1
+
+    /// Append the text which occurred before the match specified by this index.
+    member private x.AppendInputBefore (matchIndex : int) =
+        if matchIndex = 0 then
+            let m = _matchCollection.[matchIndex]
+            _builder.AppendSubstring _input 0 m.Index
+        else
+            let current = _matchCollection.[matchIndex]
+            let before = _matchCollection.[matchIndex - 1]
+            let charSpan = CharSpan.FromBounds _input (before.Index + before.Length) current.Index CharComparer.Exact
+            _builder.AppendCharSpan charSpan
+
+    member private x.AppendInputEnd() = 
+        let last = _matchCollection.[_matchCollection.Count - 1]
+        let charSpan = CharSpan.FromBounds _input (last.Index + last.Length) _input.Length CharComparer.Exact
+        _builder.AppendCharSpan charSpan
+
+    member x.Replace (replacement : string) (replaceData : VimRegexReplaceData) = 
+        _replaceCount <- 0
+        _replacement <- replacement
+        _replaceData <- replaceData
+        _builder.Length <- 0
+        _caseState <- VimReplaceCaseState.None
+        _index <- 0
+
+        let mutable matchIndex = 0 
+        while matchIndex < _matchCollection.Count do
+            let m = _matchCollection.[matchIndex]
+            x.AppendInputBefore matchIndex
+            x.AppendReplacement m 
+            matchIndex <- matchIndex + 1
+
+        x.AppendInputEnd()
+        _builder.ToString()
 
 /// Represents a Vim style regular expression 
 [<Sealed>]
@@ -144,12 +223,13 @@ type VimRegex
     member x.Regex = _regex
     member x.IncludesNewLine = _includesNewLine
     member x.IsMatch input = _regex.IsMatch(input)
-    member x.ReplaceAll (input : string) (replacement : string) (replaceData : ReplaceData) = 
-        let replacement = VimRegexUtils.ConvertReplacementString replacement replaceData
-        _regex.Replace(input, replacement)
-    member x.Replace (input : string) (replacement : string) (replaceData : ReplaceData) =
-        let replacement = VimRegexUtils.ConvertReplacementString replacement replaceData
-        _regex.Replace(input, replacement, replaceData.Count) 
+    member x.Replace (input : string) (replacement : string) (replaceData : VimRegexReplaceData) (registerMap : IRegisterMap) = 
+        let collection = _regex.Matches(input)
+        if collection.Count > 0 then
+            let util = VimRegexReplaceUtil(input, collection, registerMap)
+            util.Replace replacement replaceData
+        else
+            input
 
 [<RequireQualifiedAccess>]
 [<NoComparison>]
@@ -170,6 +250,8 @@ type MagicKind =
 
     member x.IsAnyMagic = not x.IsAnyNoMagic
 
+/// This type is responsible for converting a vim style regex into a .Net based
+/// one.  
 type VimRegexBuilder 
     (
         _pattern : string,
@@ -183,16 +265,20 @@ type VimRegexBuilder
     let mutable _matchCase = _matchCase
     let mutable _builder = StringBuilder()
     let mutable _isBroken = false
+    let mutable _groupCount = 0
     let mutable _isStartOfPattern = true
-    let mutable _isStartOfGroup = false
+    let mutable _isStartOfCollection = false
     let mutable _isRangeOpen = false
-    let mutable _isGroupOpen = false
+    let mutable _isRangeGreedy = false
+    let mutable _isCollectionOpen = false
     let mutable _includesNewLine = false
     let mutable _caseSpecifier = CaseSpecifier.None
 
     member x.Pattern = _pattern
 
-    member x.Index = _index
+    member x.Index 
+        with get () =  _index
+        and set value = _index <- value
 
     member x.Builder = _builder
 
@@ -220,16 +306,19 @@ type VimRegexBuilder
         with get() = _isStartOfPattern
         and set value = _isStartOfPattern <- value
 
-    /// Is this the first character inside of a grouping [] construct
-    member x.IsStartOfGroup 
-        with get() = _isStartOfGroup
-        and set value = _isStartOfGroup <- value
+    /// Is this the first character inside of a collection [] construct
+    member x.IsStartOfCollection 
+        with get() = _isStartOfCollection
+        and set value = _isStartOfCollection <- value
 
     /// Is this in the middle of a range? 
     member x.IsRangeOpen = _isRangeOpen
 
+    /// Is this in the middle of a collection?
+    member x.IsCollectionOpen = _isCollectionOpen
+
     /// Is this in the middle of a group?
-    member x.IsGroupOpen = _isGroupOpen
+    member x.IsGroupOpen = _groupCount > 0
 
     /// Includes a \n reference
     member x.IncludesNewLine
@@ -238,13 +327,33 @@ type VimRegexBuilder
 
     member x.IsEndOfPattern = x.Index >= x.Pattern.Length
 
+    member x.IncrementGroupCount() = 
+        _groupCount <- _groupCount + 1
+
+    member x.DecrementGroupCount() = 
+        _groupCount <- _groupCount - 1
+
     member x.IncrementIndex count =
         _index <- _index + count
 
     member x.DecrementIndex count = 
         _index <- _index - count
 
-    member x.CharAtIndex = StringUtil.charAtOption x.Index x.Pattern
+    member x.CharAtIndex = 
+        StringUtil.charAtOption x.Index x.Pattern
+
+    member x.CharAtIndexOrDefault = 
+        match StringUtil.charAtOption x.Index x.Pattern with
+        | Some c -> c
+        | None -> char 0
+
+    member x.CharAt index = 
+        StringUtil.charAtOption index x.Pattern
+
+    member x.CharAtOrDefault index = 
+        match StringUtil.charAtOption index x.Pattern with
+        | None -> char 0
+        | Some c -> c
 
     member x.AppendString str = 
         _builder.AppendString str
@@ -255,21 +364,24 @@ type VimRegexBuilder
     member x.AppendEscapedChar c = 
         c |> StringUtil.ofChar |> Regex.Escape |> x.AppendString
 
-    member x.BeginGroup() = 
+    member x.BeginCollection() = 
         x.AppendChar '['
-        _isGroupOpen <- true
-        _isStartOfGroup <- true
+        _isCollectionOpen <- true
+        _isStartOfCollection <- true
 
-    member x.EndGroup() = 
+    member x.EndCollection() = 
         x.AppendChar ']'
-        _isGroupOpen <- false
+        _isCollectionOpen <- false
 
-    member x.BeginRange() =
+    member x.BeginRange isGreedy = 
         x.AppendChar '{'
         _isRangeOpen <- true
+        _isRangeGreedy <- isGreedy
 
     member x.EndRange() =
         x.AppendChar '}'
+        if not _isRangeGreedy then
+            x.AppendChar '?'
         _isRangeOpen <- false
 
     member x.Break() =
@@ -277,10 +389,50 @@ type VimRegexBuilder
 
 module VimRegexFactory =
 
-    /// In Vim if a grouping is unmatched then it is appended literally into the match 
+    /// Generates strings based on a char filter func.  Easier than hand writing out
+    /// the values
+    let GenerateCharString filterFunc = 
+        [0 .. 255]
+        |> Seq.map (fun x -> char x)
+        |> Seq.filter filterFunc
+        |> StringUtil.ofCharSeq
+
+    let ControlCharString = GenerateCharString CharUtil.IsControl
+    let PunctuationCharString = GenerateCharString Char.IsPunctuation
+    let SpaceCharString = GenerateCharString Char.IsWhiteSpace
+
+    let PrintableGroupPattern = 
+        let str = [0 .. 255] |> Seq.map (fun i -> char i) |> Seq.filter (fun c -> not (Char.IsControl c)) |> StringUtil.ofCharSeq
+        "[" + str + "]"
+
+    let PrintableGroupNoDigitsPattern = 
+        let str = [0 .. 255] |> Seq.map (fun i -> char i) |> Seq.filter (fun c -> not (Char.IsControl c) && not (Char.IsDigit c)) |> StringUtil.ofCharSeq
+        "[" + str + "]"
+
+    /// These are the named collections specified out inside of :help E769.  These are always
+    /// appended inside a .Net [] collection and hence need to be valid in that context
+    let NamedCollectionMap = 
+        [|
+            ("alnum", "A-Za-z0-9") 
+            ("alpha", "A-Za-z") 
+            ("blank", " \t")
+            ("cntrl", ControlCharString)
+            ("digit", "0-9")
+            ("lower", "a-z")
+            ("punct", PunctuationCharString)
+            ("space", SpaceCharString)
+            ("upper", "A-Z")
+            ("xdigit", "A-Fa-f0-9")
+            ("return", StringUtil.ofChar CharCodes.Enter)
+            ("tab", "`t")
+            ("escape", StringUtil.ofChar CharCodes.Escape)
+            ("backspace", StringUtil.ofChar CharCodes.Backspace)
+        |] |> Map.ofArray
+
+    /// In Vim if a collection is unmatched then it is appended literally into the match 
     /// stream.  Can't determine if it's unmatched though until the string is fully 
     /// processed.  At this point we just go backwards and esacpe it
-    let FixOpenGroup (data : VimRegexBuilder) = 
+    let FixOpenCollection (data : VimRegexBuilder) = 
         let builder = data.Builder
         let mutable i = builder.Length - 1
         while i >= 0 do
@@ -311,17 +463,21 @@ module VimRegexFactory =
             else
                 regexOptions ||| RegexOptions.IgnoreCase
 
-        if data.IsGroupOpen then
-            FixOpenGroup data
+        if data.IsCollectionOpen then
+            FixOpenCollection data
 
-        if data.IsBroken || data.IsRangeOpen then 
-            None
+        if data.IsBroken then
+            VimResult.Error Resources.Regex_Unknown
+        elif data.IsRangeOpen then
+            VimResult.Error Resources.Regex_UnmatchedBrace
+        elif data.IsGroupOpen then
+            VimResult.Error Resources.Regex_UnmatchedParen
         else 
             let bclPattern = data.Builder.ToString()
             let regex = VimRegexUtils.TryCreateRegex bclPattern regexOptions
             match regex with
-            | None -> None
-            | Some regex -> VimRegex(data.Pattern, data.CaseSpecifier, bclPattern, regex, data.IncludesNewLine) |> Some
+            | None -> VimResult.Error Resources.Regex_Unknown
+            | Some regex -> VimRegex(data.Pattern, data.CaseSpecifier, bclPattern, regex, data.IncludesNewLine) |> VimResult.Result
 
     /// Convert the given character as a special character.  Interpretation
     /// may depend on the type of magic that is currently being employed
@@ -332,12 +488,26 @@ module VimRegexFactory =
         | '=' -> data.AppendChar '?'
         | '?' -> data.AppendChar '?'
         | '*' -> data.AppendChar '*'
-        | '(' -> data.AppendChar '('
-        | ')' -> data.AppendChar ')'
-        | '{' -> if data.IsRangeOpen then data.Break() else data.BeginRange()
+        | '(' -> 
+            data.IncrementGroupCount()
+            data.AppendChar '('
+        | ')' -> 
+            data.DecrementGroupCount()
+            data.AppendChar ')'
+        | '{' -> 
+            if data.IsRangeOpen then
+                data.Break()
+            elif data.CharAtIndexOrDefault = '-' && data.CharAtOrDefault (data.Index + 1) = '}' then
+                data.AppendString "*?"
+                data.IncrementIndex 2
+            elif data.CharAtIndexOrDefault = '-' then
+                data.BeginRange false
+                data.IncrementIndex 1
+            else
+                data.BeginRange true
         | '}' -> if data.IsRangeOpen then data.EndRange() else data.AppendChar '}'
         | '|' -> data.AppendChar '|'
-        | '^' -> if data.IsStartOfPattern || data.IsStartOfGroup then data.AppendChar '^' else data.AppendEscapedChar '^'
+        | '^' -> if data.IsStartOfPattern || data.IsStartOfCollection then data.AppendChar '^' else data.AppendEscapedChar '^'
         | '$' -> 
             if data.IsEndOfPattern then 
                 data.AppendString @"\r?$" 
@@ -351,8 +521,8 @@ module VimRegexFactory =
                 data.AppendEscapedChar ']'
                 data.IncrementIndex 1
             | _ -> 
-                data.BeginGroup()
-        | ']' -> if data.IsGroupOpen then data.EndGroup() else data.AppendEscapedChar(']')
+                data.BeginCollection()
+        | ']' -> if data.IsCollectionOpen then data.EndCollection() else data.AppendEscapedChar(']')
         | 'd' -> data.AppendString @"\d"
         | 'D' -> data.AppendString @"\D"
         | 's' -> data.AppendString @"\s"
@@ -371,6 +541,14 @@ module VimRegexFactory =
         | 'L' -> data.AppendString @"[^a-z]"
         | 'u' -> data.AppendString @"[A-Z]"
         | 'U' -> data.AppendString @"[^A-Z]"
+        | 'i' -> data.AppendString @"[0-9_a-zA-Zàáâãäåæçèéêë@]"
+        | 'I' -> data.AppendString @"[_a-zA-Zàáâãäåæçèéêë@]"
+        | 'k' -> data.AppendString @"[0-9_a-zA-Zàáâãäåæçèéêë@]"
+        | 'K' -> data.AppendString @"[_a-zA-Zàáâãäåæçèéêë@]"
+        | 'f' -> data.AppendString @"[0-9a-zA-Z@/\.-_+,#$%{}[\]:!~=]"
+        | 'F' -> data.AppendString @"[a-zA-Z@/\.-_+,#$%{}[\]:!~=]"
+        | 'p' -> data.AppendString PrintableGroupPattern
+        | 'P' -> data.AppendString PrintableGroupNoDigitsPattern
         | _ -> data.AppendEscapedChar c
 
     /// Convert the given char in the magic setting 
@@ -431,6 +609,14 @@ module VimRegexFactory =
         | 'W' -> ConvertCharAsSpecial data c
         | 'x' -> ConvertCharAsSpecial data c
         | 'X' -> ConvertCharAsSpecial data c
+        | 'i' -> ConvertCharAsSpecial data c
+        | 'I' -> ConvertCharAsSpecial data c
+        | 'k' -> ConvertCharAsSpecial data c
+        | 'K' -> ConvertCharAsSpecial data c
+        | 'f' -> ConvertCharAsSpecial data c
+        | 'F' -> ConvertCharAsSpecial data c
+        | 'p' -> ConvertCharAsSpecial data c
+        | 'P' -> ConvertCharAsSpecial data c
         | '_' -> 
             match data.CharAtIndex with
             | None -> data.Break()
@@ -446,7 +632,6 @@ module VimRegexFactory =
     /// Process an escaped character.  Look first for global options such as ignore 
     /// case or magic and then go for magic specific characters
     let ProcessEscapedChar (data : VimRegexBuilder) c =
-        let escape = VimRegexUtils.Escape
         match c with 
         | 'm' -> data.MagicKind <- MagicKind.Magic
         | 'M' -> data.MagicKind <- MagicKind.NoMagic
@@ -479,28 +664,66 @@ module VimRegexFactory =
 
                 data.IsStartOfPattern <- false
 
-    /// Convert a normal unescaped char based on the magic kind
-    let ProcessNormalChar (data : VimRegexBuilder) c = 
-        match data.MagicKind with
-        | MagicKind.Magic -> ConvertCharAsMagic data c
-        | MagicKind.NoMagic -> ConvertCharAsNoMagic data c
-        | MagicKind.VeryMagic -> 
-            if CharUtil.IsLetter c || CharUtil.IsDigit c || c = '_' then 
-                data.AppendChar c
+    /// Try and parse out the name of a named collection.  This is called when the 
+    /// index points to ':' assuming this is a valid named collection
+    let TryParseNamedCollectionName (data : VimRegexBuilder) = 
+        let index = data.Index
+        if data.CharAtOrDefault index = ':' then
+            let mutable endIndex = index + 1
+            while endIndex < data.Pattern.Length && data.CharAtOrDefault endIndex <> ':' do
+                endIndex <- endIndex + 1
+
+            if data.CharAtOrDefault (endIndex + 1) = ']' then
+                // It's a named collection
+                let startIndex = index + 1
+                let name = data.Pattern.Substring(startIndex, endIndex - startIndex)
+                Some name
             else
-                ConvertCharAsSpecial data c
-        | MagicKind.VeryNoMagic -> data.AppendEscapedChar c
-        data.IsStartOfPattern <- false
+                None
+        else
+            None
+
+    /// Try and append one of the named collections.  These are covered in :help E769.  
+    let TryAppendNamedCollection (data : VimRegexBuilder) c = 
+        if data.IsCollectionOpen && c = '[' then
+            match TryParseNamedCollectionName data with
+            | None -> false
+            | Some name -> 
+                match Map.tryFind name NamedCollectionMap with
+                | Some value -> 
+                    // Length of the name + characters in the named "::]"
+                    data.Index <- data.Index + (name.Length + 3)
+                    data.AppendString value
+                    true
+                | None -> false
+        else
+            false
+
+    /// Convert a normal unescaped char 
+    let ProcessNormalChar (data : VimRegexBuilder) c = 
+        if not (TryAppendNamedCollection data c) then
+
+            // Process the normal character based on our current magic kind
+            match data.MagicKind with
+            | MagicKind.Magic -> ConvertCharAsMagic data c
+            | MagicKind.NoMagic -> ConvertCharAsNoMagic data c
+            | MagicKind.VeryMagic -> 
+                if CharUtil.IsLetter c || CharUtil.IsDigit c || c = '_' then 
+                    data.AppendChar c
+                else
+                    ConvertCharAsSpecial data c
+            | MagicKind.VeryNoMagic -> data.AppendEscapedChar c
+            data.IsStartOfPattern <- false
 
     let Convert (data : VimRegexBuilder) = 
-        let rec inner () : VimRegex option =
+        let rec inner () : VimResult<VimRegex> =
             if data.IsBroken then 
-                None
+                VimResult.Error Resources.Regex_Unknown 
             else
                 match data.CharAtIndex with
                 | None -> CreateVimRegex data 
                 | Some '\\' -> 
-                    let wasStartOfGroup = data.IsStartOfGroup
+                    let wasStartOfCollection = data.IsStartOfCollection
                     data.IncrementIndex 1
                     match data.CharAtIndex with 
                     | None -> ProcessNormalChar data '\\'
@@ -508,10 +731,10 @@ module VimRegexFactory =
                         data.IncrementIndex 1
                         ProcessEscapedChar data c
 
-                    // If we were at the start of a grouping before processing this 
+                    // If we were at the start of a collection before processing this 
                     // char then we no longer are afterwards
-                    if wasStartOfGroup then 
-                        data.IsStartOfGroup <- false
+                    if wasStartOfCollection then 
+                        data.IsStartOfCollection <- false
 
                     inner ()
                 | Some c -> 
@@ -519,7 +742,7 @@ module VimRegexFactory =
                     ProcessNormalChar data c |> inner
         inner ()
 
-    let Create pattern options = 
+    let CreateEx pattern options = 
 
         // Calculate the initial value for whether or not we display case
         let matchCase = 
@@ -543,6 +766,11 @@ module VimRegexFactory =
         let data = VimRegexBuilder(pattern, magicKind, matchCase, options)
 
         Convert data
+
+    let Create pattern options = 
+        match CreateEx pattern options with
+        | VimResult.Result vimRegex -> Some vimRegex
+        | VimResult.Error _ -> None
 
     let CreateCaseOptions (globalSettings : IVimGlobalSettings) =
         let options = VimRegexOptions.Default

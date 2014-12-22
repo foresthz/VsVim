@@ -817,14 +817,14 @@ namespace Vim.UnitTest
             }
         }
 
-        public sealed class RunVisualStudioCommandTest : CommandModeIntegrationTest
+        public sealed class RunHostCommandTest : CommandModeIntegrationTest
         {
             [Fact]
             public void SimpleCommand()
             {
                 Create("");
                 var didRun = false;
-                _vimHost.RunVisualStudioCommandFunc = (textView, commandName, argument) =>
+                _vimHost.RunHostCommandFunc = (textView, commandName, argument) =>
                     {
                         didRun = true;
                         Assert.Equal("Edit.Comment", commandName);
@@ -842,7 +842,7 @@ namespace Vim.UnitTest
             {
                 Create("");
                 var didRun = false;
-                _vimHost.RunVisualStudioCommandFunc = (textView, commandName, argument) =>
+                _vimHost.RunHostCommandFunc = (textView, commandName, argument) =>
                     {
                         didRun = true;
                         Assert.Equal("Edit_Comment", commandName);
@@ -865,7 +865,7 @@ namespace Vim.UnitTest
                 _vimBuffer.VimTextBuffer.SetLocalMark(LocalMark.NewLetter(Letter.A), 0, 1);
                 _vimBuffer.VimTextBuffer.SetLocalMark(LocalMark.NewLetter(Letter.B), 0, 1);
                 var didRun = false;
-                _vimHost.RunVisualStudioCommandFunc = (textView, commandName, argument) =>
+                _vimHost.RunHostCommandFunc = (textView, commandName, argument) =>
                     {
                         didRun = true;
                         Assert.Equal("Edit.Comment", commandName);
@@ -947,6 +947,22 @@ namespace Vim.UnitTest
                 Create("cat", "dog", "tree", "fish", "rock");
                 RunCommand("2,3y2");
                 AssertLines("tree", "fish");
+            }
+
+            /// <summary>
+            /// A line wise value in a register should always be normalized to end with a new 
+            /// line.  In this particular case the last line doesn't have a new line so the code
+            /// must add it in advance
+            ///
+            /// Issue 1526
+            /// </summary>
+            [Fact]
+            public void YankIncludesLastLine()
+            {
+                Create("foo", "bar", "baz");
+                _textView.MoveCaretToLine(1);
+                RunCommand("y2");
+                Assert.True(UnnamedRegister.StringValue.EndsWith(Environment.NewLine));
             }
         }
 

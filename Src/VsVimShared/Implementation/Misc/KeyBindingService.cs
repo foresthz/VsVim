@@ -10,6 +10,7 @@ using Microsoft.VisualStudio.Shell.Interop;
 using Microsoft.Win32;
 using Vim;
 using Vim.UI.Wpf;
+using System.IO;
 
 namespace Vim.VisualStudio.Implementation.Misc
 {
@@ -25,6 +26,7 @@ namespace Vim.VisualStudio.Implementation.Misc
         private readonly IVimProtectedOperations _protectedOperations;
         private readonly IVimApplicationSettings _vimApplicationSettings;
         private readonly ScopeData _scopeData;
+        private bool _includeAllScopes;
         private ConflictingKeyBindingState _state;
         private HashSet<KeyInput> _vimFirstKeyInputSet;
 
@@ -32,6 +34,19 @@ namespace Vim.VisualStudio.Implementation.Misc
         {
             get { return _vimFirstKeyInputSet; }
             set { _vimFirstKeyInputSet = value; }
+        }
+
+        internal bool IncludeAllScopes
+        {
+            get { return _includeAllScopes; }
+            set
+            {
+                if (value != _includeAllScopes)
+                {
+                    _includeAllScopes = value;
+                    ConflictingKeyBindingState = ConflictingKeyBindingState.HasNotChecked;
+                }
+            }
         }
 
         internal ConflictingKeyBindingState ConflictingKeyBindingState
@@ -195,7 +210,7 @@ namespace Vim.VisualStudio.Implementation.Misc
         internal bool ShouldSkip(CommandKeyBinding binding)
         {
             var scope = binding.KeyBinding.Scope;
-            if (_scopeData.GetScopeKind(scope) == ScopeKind.Unknown)
+            if (!_includeAllScopes &&  _scopeData.GetScopeKind(scope) == ScopeKind.Unknown)
             {
                 return true;
             }
@@ -286,11 +301,60 @@ namespace Vim.VisualStudio.Implementation.Misc
             }
         }
 
+        private void DumpKeyboard(StreamWriter streamWriter)
+        { 
+            try
+            {
+                foreach (var dteCommand in _dte.Commands.GetCommands())
+                {
+                    streamWriter.WriteLine("Command: {0}", dteCommand.Name);
+
+                    CommandId commandId;
+                    if (!dteCommand.TryGetCommandId(out commandId))
+                    {
+                        streamWriter.WriteLine("Cannot get CommandId: + ", dteCommand.Name);
+                        continue;
+                    }
+
+                    streamWriter.WriteLine("\tId: {0} {1}", commandId.Group, commandId.Id);
+
+                    Exception bindingEx;
+                    var bindings = dteCommand.GetBindings(out bindingEx);
+                    if (bindingEx != null)
+                    {
+                        streamWriter.WriteLine("!!!Exception!!! " + bindingEx.Message + Environment.NewLine + bindingEx.StackTrace);
+                        continue;
+                    }
+
+                    foreach (var binding in bindings)
+                    {
+                        streamWriter.WriteLine("\tBinding: {0} ", binding);
+
+                        KeyBinding keyBinding;
+                        if (KeyBinding.TryParse(binding, out keyBinding))
+                        {
+                            streamWriter.WriteLine("\tKey Binding: {0} {1}", keyBinding.Scope, keyBinding.CommandString);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                streamWriter.WriteLine("!!!Exception!!! " + ex.Message + Environment.NewLine + ex.StackTrace);
+            }
+        }
+
         #region IKeyBindingService
 
         ConflictingKeyBindingState IKeyBindingService.ConflictingKeyBindingState
         {
             get { return ConflictingKeyBindingState; }
+        }
+
+        bool IKeyBindingService.IncludeAllScopes
+        {
+            get { return IncludeAllScopes; }
+            set { IncludeAllScopes = value; }
         }
 
         event EventHandler IKeyBindingService.ConflictingKeyBindingStateChanged
@@ -322,6 +386,11 @@ namespace Vim.VisualStudio.Implementation.Misc
         void IKeyBindingService.IgnoreAnyConflicts()
         {
             IgnoreAnyConflicts();
+        }
+
+        void IKeyBindingService.DumpKeyboard(StreamWriter streamWriter)
+        {
+            DumpKeyboard(streamWriter);
         }
 
         #endregion

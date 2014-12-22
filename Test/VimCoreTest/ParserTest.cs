@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.FSharp.Collections;
+using Microsoft.FSharp.Text.StructuredPrintfImpl;
 using Vim.Extensions;
 using Vim.Interpreter;
 using Xunit;
@@ -64,7 +65,7 @@ namespace Vim.UnitTest
                 var parser = CreateParser(text);
                 var parseResult = parser.ParseStringLiteral();
                 Assert.True(parseResult.IsSucceeded);
-                return parseResult.AsSucceeded().Item.AsString().Item;
+                return parseResult.AsSucceeded().Item.AsConstantValue().Item.AsString().Item;
             }
 
             [Fact]
@@ -182,6 +183,13 @@ namespace Vim.UnitTest
             {
                 var list = Parse("let x y");
                 Assert.Equal(new[] { "x", "y" }, list.Select(x => x.Name));
+            }
+
+            [Fact]
+            public void ScopedVariable()
+            {
+                var list = Parse("let g:x");
+                Assert.Equal(new[] { "x" }, list.Select(x => x.Name));
             }
         }
 
@@ -659,6 +667,35 @@ let x = 42
             }
         }
 
+        public sealed class ListTest : ParserTest
+        {
+            private FSharpList<Expression> ParseList(string text)
+            {
+                var parser = CreateParser(text);
+                var parseResult = parser.ParseList();
+                Assert.True(parseResult.IsSucceeded);
+                return parseResult.AsSucceeded().Item.AsList().Item;
+            }
+
+            [Fact]
+            public void Empty_list()
+            {
+                Assert.True(ParseList("[]").IsEmpty);
+            }
+
+            [Fact]
+            public void Unary_list()
+            {
+                Assert.Equal(1, ParseList("[2]").Length);
+            }
+
+            [Fact]
+            public void Ternary_list()
+            {
+                Assert.Equal(3, ParseList("['foo', 'bar', 'baz']").Length);
+            }
+        }
+
         public sealed class QuickFixTest : ParserTest
         {
             [Fact]
@@ -702,7 +739,7 @@ let x = 42
                 parser.Tokenizer.TokenizerFlags = TokenizerFlags.AllowDoubleQuote;
                 var parseResult = parser.ParseStringConstant();
                 Assert.True(parseResult.IsSucceeded);
-                return parseResult.AsSucceeded().Item.AsString().Item;
+                return parseResult.AsSucceeded().Item.AsConstantValue().Item.AsString().Item;
             }
 
             [Fact]
@@ -952,6 +989,40 @@ let x = 42
             public void SpaceBetweenNameAndPattern()
             {
                 AssertSubstitute("s / /", " ", "");
+            }
+        }
+
+        public sealed class OnlyTest : ParserTest
+        {
+            [Fact]
+            public void ParsesShortFormOfOnlyCommand()
+            {
+                var command = ParseLineCommand("on");
+                Assert.True(command.IsOnly);
+            }
+
+            [Fact]
+            public void ParsesLongFormOfOnlyCommand()
+            {
+                var command = ParseLineCommand("only");
+                Assert.True(command.IsOnly);
+            }
+        }
+
+        public sealed class TabOnlyTest : ParserTest
+        {
+            [Fact]
+            public void ParsesShortFormOfTabonlyCommand()
+            {
+                var command = ParseLineCommand("tabo");
+                Assert.True(command.IsTabOnly);
+            }
+
+            [Fact]
+            public void ParsesLongFormOfTabonlyCommand()
+            {
+                var command = ParseLineCommand("tabonly");
+                Assert.True(command.IsTabOnly);
             }
         }
 
@@ -1709,7 +1780,7 @@ let x = 42
             /// Make sure the abbreviation can be expanded
             /// </summary>
             [Fact]
-            public void TryExpand_Abbrevation()
+            public void TryExpand_Abbreviation()
             {
                 var parser = CreateParser("");
                 foreach (var tuple in Parser.s_LineCommandNamePair)
