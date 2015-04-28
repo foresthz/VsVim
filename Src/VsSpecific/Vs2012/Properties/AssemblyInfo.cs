@@ -7,10 +7,10 @@ using System.Runtime.InteropServices;
 // associated with an assembly.
 [assembly: AssemblyTitle("Vim.VisualStudio.Vs2012")]
 [assembly: AssemblyDescription("")]
-[assembly: AssemblyConfiguration("")]
+[assembly: AssemblyConfiguration("没有配置")]
 [assembly: AssemblyCompany("Microsoft")]
-[assembly: AssemblyProduct("Vim.VisualStudio.Vs2012")]
-[assembly: AssemblyCopyright("Copyright \u00A9 Microsoft 2012")]
+[assembly: AssemblyProduct("版本Vs2012")]
+[assembly: AssemblyCopyright("Copyright 版权 Microsoft 2012")]
 [assembly: AssemblyTrademark("")]
 [assembly: AssemblyCulture("")]
 
